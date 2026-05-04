@@ -47,3 +47,37 @@
 2.多社交平台支持：接入多个社交媒体中。 
 3.多文档联合问答：系统可以同时利用多个文档内容回答问题。 
 4.多模态能力：支持识别语言、图片、视频等多模态信息。
+
+## 本地运行
+
+### CLI 演示
+
+```bash
+python3 agent.py
+```
+
+### WebUI / 模拟聊天渠道
+
+```bash
+python3 webui.py
+```
+
+启动后访问 `http://127.0.0.1:8000`。页面支持选择不同联系人、输入会话 ID
+和消息内容，并展示自动回复/建议确认/拒绝、回复依据、安全标记和原始 JSON。
+
+如果本机 `8001` 运行了 OpenAI-compatible 本地模型服务，可以在页面的
+“本地 AI 渠道测试”中填写：
+
+- Base URL: `http://127.0.0.1:8001`
+- Model: `Qwen3.6-27B-4bit` 或 `Qwen3.6-35B-A3B-4bit`
+- API Key: 可在页面输入，或启动前设置 `LOCAL_AI_API_KEY`
+
+```bash
+LOCAL_AI_API_KEY=allen python3 webui.py
+```
+
+### 测试
+
+```bash
+python3 -m unittest -v
+```
