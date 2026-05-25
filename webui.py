@@ -183,7 +183,7 @@ HTML = """<!doctype html>
       try {
         const response = await fetch("/api/message", { method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(payload) });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || response.statusText);
+        if (!response.ok && !data.decision) throw new Error(data.error || response.statusText);
         action.className = "badge " + data.decision.action;
         action.textContent = data.decision.action;
         reply.textContent = data.draft.text;
@@ -442,8 +442,15 @@ class WebAgentHandler(BaseHTTPRequestHandler):
             response_data = result_to_dict(result)
             rl = self.system.rate_limiter
             if "rate_limited" in result.draft.safety_flags and rl is not None:
-                response_data["retry_after_seconds"] = round(rl.retry_after(result.message.sender_id), 1)
-            self._send_json(HTTPStatus.OK, response_data)
+                retry_after = round(rl.retry_after(result.message.sender_id), 1)
+                response_data["retry_after_seconds"] = retry_after
+                self._send_json(
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    response_data,
+                    extra_headers={"Retry-After": str(max(1, round(retry_after)))},
+                )
+            else:
+                self._send_json(HTTPStatus.OK, response_data)
         except _BodyTooLargeError:
             self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": f"request body exceeds {MAX_BODY_BYTES} bytes"})
         except json.JSONDecodeError:
@@ -480,16 +487,18 @@ class WebAgentHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length).decode("utf-8")
         return json.loads(body or "{}")
 
-    def _send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
-        self._send_text(status, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
+    def _send_json(self, status: HTTPStatus, payload: dict[str, object], extra_headers: dict[str, str] | None = None) -> None:
+        self._send_text(status, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8", extra_headers)
 
-    def _send_text(self, status: HTTPStatus, text: str, content_type: str) -> None:
+    def _send_text(self, status: HTTPStatus, text: str, content_type: str, extra_headers: dict[str, str] | None = None) -> None:
         body = text.encode("utf-8")
         self.send_response(status.value)
         self.send_header("content-type", content_type)
         self.send_header("content-length", str(len(body)))
         self.send_header("x-content-type-options", "nosniff")
         self.send_header("x-frame-options", "DENY")
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 

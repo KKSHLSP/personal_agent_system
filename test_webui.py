@@ -41,6 +41,7 @@ class WebAgentHandlerTest(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertIn("个人数字分身 Agent", body)
         self.assertIn("data.entries", body)
+        self.assertIn("!response.ok && !data.decision", body)
 
     def test_message_endpoint_returns_agent_decision(self):
         payload = {
@@ -283,7 +284,8 @@ class WebAgentRateLimitTest(unittest.TestCase):
         cls.server.server_close()
         cls.thread.join(timeout=2)
 
-    def _post_message(self, sender_id: str) -> dict:
+    def _post_message(self, sender_id: str) -> tuple[int, dict]:
+        """Returns (http_status_code, response_body_dict)."""
         body = json.dumps({
             "sender_id": sender_id,
             "conversation_id": f"rl-test-{sender_id}",
@@ -295,23 +297,48 @@ class WebAgentRateLimitTest(unittest.TestCase):
             method="POST",
             headers={"content-type": "application/json"},
         )
-        with urllib.request.urlopen(request) as response:
-            return json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+            finally:
+                exc.close()
+
+    def _post_message_raw_response(self, sender_id: str):
+        """Returns the HTTPError or response object (for header inspection)."""
+        body = json.dumps({
+            "sender_id": sender_id,
+            "conversation_id": f"rl-test-{sender_id}",
+            "content": "资料在哪里？",
+        }, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://{self.host}:{self.port}/api/message",
+            data=body,
+            method="POST",
+            headers={"content-type": "application/json"},
+        )
+        try:
+            return urllib.request.urlopen(request)
+        except urllib.error.HTTPError as exc:
+            return exc
 
     def test_first_message_is_allowed(self):
-        data = self._post_message("rl_user_1")
+        status, data = self._post_message("rl_user_1")
+        self.assertEqual(status, 200)
         self.assertNotEqual(data["decision"]["action"], "REJECT")
         self.assertNotIn("rate_limited", data["draft"]["safety_flags"])
 
     def test_second_message_is_rate_limited(self):
         self._post_message("rl_user_2")  # consume the 1 allowed message
-        data = self._post_message("rl_user_2")
+        status, data = self._post_message("rl_user_2")
         self.assertEqual(data["decision"]["action"], "REJECT")
         self.assertIn("rate_limited", data["draft"]["safety_flags"])
 
     def test_rate_limited_response_includes_retry_after_seconds(self):
         self._post_message("rl_user_3")  # consume allowance
-        data = self._post_message("rl_user_3")
+        _status, data = self._post_message("rl_user_3")
         self.assertIn("retry_after_seconds", data)
         self.assertGreater(data["retry_after_seconds"], 0.0)
         self.assertLessEqual(data["retry_after_seconds"], 60.0)
@@ -322,6 +349,20 @@ class WebAgentRateLimitTest(unittest.TestCase):
         with urllib.request.urlopen(f"http://{self.host}:{self.port}/api/stats") as response:
             data = json.loads(response.read().decode("utf-8"))
         self.assertGreaterEqual(data["rate_limited_count"], 1)
+
+    def test_rate_limited_returns_429_status(self):
+        self._post_message("rl_user_5")  # consume allowance
+        status, data = self._post_message("rl_user_5")
+        self.assertEqual(status, 429)
+        self.assertIn("rate_limited", data["draft"]["safety_flags"])
+
+    def test_rate_limited_response_has_retry_after_header(self):
+        self._post_message("rl_user_6")  # consume allowance
+        response = self._post_message_raw_response("rl_user_6")
+        self.assertEqual(response.code if hasattr(response, "code") else response.status, 429)
+        retry_after = response.headers.get("Retry-After")
+        self.assertIsNotNone(retry_after, "Retry-After header must be present on 429 responses")
+        self.assertGreater(int(retry_after), 0)
 
 
 class LocalAiMockHandler(BaseHTTPRequestHandler):
