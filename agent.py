@@ -496,7 +496,7 @@ class AuditLog:
                             self.entries.append(self._dict_to_entry(json.loads(line)))
                         except (KeyError, ValueError, json.JSONDecodeError):
                             pass
-        except FileNotFoundError:
+        except OSError:
             pass
 
     def _append_to_file(self, entry: AuditEntry) -> None:

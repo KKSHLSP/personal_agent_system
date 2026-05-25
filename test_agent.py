@@ -4,6 +4,7 @@ import os
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 from agent import (
     AuditLog,
@@ -568,6 +569,19 @@ class AuditLogFileTest(unittest.TestCase):
 
     def test_missing_file_starts_with_empty_entries(self):
         log = AuditLog(log_file="/tmp/__nonexistent_audit_log_9x7z__.jsonl")
+        self.assertEqual(len(log.snapshot()), 0)
+
+    def test_directory_path_starts_with_empty_entries(self):
+        # Opening a directory raises IsADirectoryError (subclass of OSError);
+        # AuditLog must not propagate it.
+        log = AuditLog(log_file="/tmp")
+        self.assertEqual(len(log.snapshot()), 0)
+
+    def test_permission_denied_path_starts_with_empty_entries(self):
+        # Simulate an OSError other than FileNotFoundError without relying on
+        # platform-specific protected paths.
+        with mock.patch("builtins.open", side_effect=PermissionError):
+            log = AuditLog(log_file="/tmp/blocked_audit_log.jsonl")
         self.assertEqual(len(log.snapshot()), 0)
 
     def test_stats_reflect_loaded_entries(self):
