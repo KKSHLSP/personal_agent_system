@@ -14,10 +14,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Iterable, Protocol
+from typing import Callable, Iterable, Protocol
 import json
 import re
 import threading
+import time
 
 
 class ReplyAction(str, Enum):
@@ -409,6 +410,42 @@ def _tokenize(text: str) -> set[str]:
     return terms
 
 
+class RateLimiter:
+    """Sliding-window rate limiter keyed by contact_id.
+
+    Uses an injectable clock so tests can control time without sleeping.
+    """
+
+    def __init__(
+        self,
+        max_messages: int,
+        window_seconds: float,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self._max = max_messages
+        self._window = window_seconds
+        self._clock = clock if clock is not None else time.monotonic
+        self._timestamps: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def is_allowed(self, contact_id: str) -> bool:
+        """Return True if the contact has not exceeded the limit; record the attempt."""
+        now = self._clock()
+        cutoff = now - self._window
+        with self._lock:
+            bucket = [t for t in self._timestamps.get(contact_id, []) if t >= cutoff]
+            if len(bucket) >= self._max:
+                self._timestamps[contact_id] = bucket
+                return False
+            bucket.append(now)
+            self._timestamps[contact_id] = bucket
+            return True
+
+    def reset(self, contact_id: str) -> None:
+        with self._lock:
+            self._timestamps.pop(contact_id, None)
+
+
 class PersonalAgentSystem:
     def __init__(
         self,
@@ -420,6 +457,7 @@ class PersonalAgentSystem:
         generator: ReplyGenerator,
         guard: SafetyPrivacyGuard,
         audit_log: AuditLog,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self.adapter = adapter
         self.permission_store = permission_store
@@ -429,8 +467,26 @@ class PersonalAgentSystem:
         self.generator = generator
         self.guard = guard
         self.audit_log = audit_log
+        self._rate_limiter = rate_limiter
 
     def handle_message(self, message: IncomingMessage) -> AgentResult:
+        if self._rate_limiter is not None and not self._rate_limiter.is_allowed(message.sender_id):
+            decision = ReplyDecision(
+                ReplyAction.REJECT,
+                "发送频率超过限制，请稍后再试。",
+                1.0,
+                False,
+            )
+            draft = ReplyDraft(
+                text="消息太频繁，请稍后再试。",
+                evidence=[],
+                style_notes=[],
+                safety_flags=["rate_limited"],
+            )
+            result = AgentResult(message=message, decision=decision, draft=draft)
+            self.audit_log.record(result)
+            return result
+
         permission = self.permission_store.get_profile(message.sender_id)
         context = self.router.get_context(message, permission)
         message_flags = self.guard.inspect_message(message)

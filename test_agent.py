@@ -15,6 +15,7 @@ from agent import (
     PermissionProfile,
     PermissionStore,
     PersonalAgentSystem,
+    RateLimiter,
     ReplyAction,
     ReplyGenerator,
     SafetyPrivacyGuard,
@@ -23,7 +24,7 @@ from agent import (
 )
 
 
-def make_system(auto_reply_enabled=True, allowed_tags=None, contact_id="alice"):
+def make_system(auto_reply_enabled=True, allowed_tags=None, contact_id="alice", rate_limiter=None):
     allowed_tags = allowed_tags or {"public", "course"}
     adapter = MockChatAdapter()
     permissions = PermissionStore(
@@ -71,6 +72,7 @@ def make_system(auto_reply_enabled=True, allowed_tags=None, contact_id="alice"):
         ReplyGenerator(style),
         SafetyPrivacyGuard(),
         AuditLog(),
+        rate_limiter=rate_limiter,
     )
 
 
@@ -252,6 +254,126 @@ class MessageRouterThreadSafetyTest(unittest.TestCase):
         final_msg = IncomingMessage("user", "shared-conv", "final", datetime.now(timezone.utc), "mock")
         ctx = router.get_context(final_msg, perm)
         self.assertLessEqual(len(ctx.recent_messages), 10)
+
+
+class RateLimiterTest(unittest.TestCase):
+    def _make_clock(self, start: float = 0.0):
+        """Returns a mutable clock that tests can advance."""
+        state = [start]
+
+        def clock() -> float:
+            return state[0]
+
+        def advance(delta: float) -> None:
+            state[0] += delta
+
+        return clock, advance
+
+    def test_within_limit_allows_all_messages(self):
+        clock, _ = self._make_clock()
+        limiter = RateLimiter(max_messages=3, window_seconds=60.0, clock=clock)
+
+        self.assertTrue(limiter.is_allowed("alice"))
+        self.assertTrue(limiter.is_allowed("alice"))
+        self.assertTrue(limiter.is_allowed("alice"))
+
+    def test_exceeds_limit_blocks_next_message(self):
+        clock, _ = self._make_clock()
+        limiter = RateLimiter(max_messages=2, window_seconds=60.0, clock=clock)
+
+        limiter.is_allowed("alice")
+        limiter.is_allowed("alice")
+
+        self.assertFalse(limiter.is_allowed("alice"))
+
+    def test_different_contacts_have_independent_limits(self):
+        clock, _ = self._make_clock()
+        limiter = RateLimiter(max_messages=1, window_seconds=60.0, clock=clock)
+
+        self.assertTrue(limiter.is_allowed("alice"))
+        self.assertFalse(limiter.is_allowed("alice"))
+        self.assertTrue(limiter.is_allowed("bob"))  # bob not affected
+
+    def test_limit_resets_after_window_expires(self):
+        clock, advance = self._make_clock()
+        limiter = RateLimiter(max_messages=2, window_seconds=30.0, clock=clock)
+
+        limiter.is_allowed("alice")
+        limiter.is_allowed("alice")
+        self.assertFalse(limiter.is_allowed("alice"))
+
+        advance(31.0)  # past the 30-second window
+
+        self.assertTrue(limiter.is_allowed("alice"))
+
+    def test_window_is_sliding_not_fixed(self):
+        clock, advance = self._make_clock()
+        limiter = RateLimiter(max_messages=2, window_seconds=10.0, clock=clock)
+
+        limiter.is_allowed("alice")   # t=0
+        advance(6.0)
+        limiter.is_allowed("alice")   # t=6 — now at limit
+
+        advance(5.0)                  # t=11 — first entry (t=0) has expired
+        # Only the t=6 entry remains in [t-10, t] = [1, 11]
+        self.assertTrue(limiter.is_allowed("alice"))  # t=11, count=1+1=2 — still within limit
+
+    def test_reset_clears_contact_history(self):
+        clock, _ = self._make_clock()
+        limiter = RateLimiter(max_messages=1, window_seconds=60.0, clock=clock)
+
+        limiter.is_allowed("alice")
+        self.assertFalse(limiter.is_allowed("alice"))
+
+        limiter.reset("alice")
+        self.assertTrue(limiter.is_allowed("alice"))
+
+    def test_system_integration_rate_limited_message_is_rejected(self):
+        clock, _ = self._make_clock()
+        limiter = RateLimiter(max_messages=2, window_seconds=60.0, clock=clock)
+        system = make_system(auto_reply_enabled=True, rate_limiter=limiter)
+
+        system.handle_message(message("资料在哪里？"))
+        system.handle_message(message("作业截止时间？"))
+        result = system.handle_message(message("第三条消息"))
+
+        self.assertEqual(result.decision.action, ReplyAction.REJECT)
+        self.assertIn("rate_limited", result.draft.safety_flags)
+        self.assertFalse(result.should_send)
+
+    def test_rate_limited_rejection_is_recorded_in_audit_log(self):
+        clock, _ = self._make_clock()
+        limiter = RateLimiter(max_messages=1, window_seconds=60.0, clock=clock)
+        system = make_system(auto_reply_enabled=True, rate_limiter=limiter)
+
+        system.handle_message(message("资料在哪里？"))
+        system.handle_message(message("超限消息"))
+
+        entries = system.audit_log.snapshot()
+        rate_limited_entries = [e for e in entries if "rate_limited" in e.safety_flags]
+        self.assertEqual(len(rate_limited_entries), 1)
+        self.assertEqual(rate_limited_entries[0].action, ReplyAction.REJECT)
+
+    def test_rate_limiter_thread_safety(self):
+        clock, _ = self._make_clock(start=1000.0)
+        limiter = RateLimiter(max_messages=50, window_seconds=60.0, clock=clock)
+        allowed: list[bool] = []
+        lock = threading.Lock()
+
+        def check(_: int) -> None:
+            result = limiter.is_allowed("shared-contact")
+            with lock:
+                allowed.append(result)
+
+        threads = [threading.Thread(target=check, args=(i,)) for i in range(80)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(allowed), 80)
+        self.assertEqual(allowed.count(True), 50)
+        self.assertEqual(allowed.count(False), 30)
 
 
 if __name__ == "__main__":
