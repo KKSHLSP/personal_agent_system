@@ -112,6 +112,7 @@ class AuditEntry:
     safety_flags: list[str]
     auto_sent: bool
     request_id: str = ""
+    platform: str = ""
 
 
 class PlatformAdapter(Protocol):
@@ -457,6 +458,7 @@ class AuditStats:
     flagged_count: int
     mean_confidence: float
     by_flag: dict[str, int] = field(default_factory=dict)
+    by_platform: dict[str, int] = field(default_factory=dict)
 
 
 def _parse_iso_dt(value: str) -> "datetime | None":
@@ -496,6 +498,7 @@ class AuditLog:
             safety_flags=result.draft.safety_flags,
             auto_sent=result.should_send,
             request_id=request_id,
+            platform=result.message.platform,
         )
         with self._lock:
             self.entries.append(entry)
@@ -553,6 +556,7 @@ class AuditLog:
             safety_flags=list(d.get("safety_flags", [])),
             auto_sent=bool(d["auto_sent"]),
             request_id=str(d.get("request_id", "")),
+            platform=str(d.get("platform", "")),
         )
 
     def stats(self) -> AuditStats:
@@ -561,6 +565,7 @@ class AuditLog:
             return AuditStats(total=0, by_action={}, auto_sent_count=0, flagged_count=0, mean_confidence=0.0)
         by_action: dict[str, int] = {}
         by_flag: dict[str, int] = {}
+        by_platform: dict[str, int] = {}
         auto_sent = 0
         flagged = 0
         total_conf = 0.0
@@ -573,6 +578,8 @@ class AuditLog:
                 flagged += 1
                 for flag in entry.safety_flags:
                     by_flag[flag] = by_flag.get(flag, 0) + 1
+            if entry.platform:
+                by_platform[entry.platform] = by_platform.get(entry.platform, 0) + 1
             total_conf += entry.confidence
         return AuditStats(
             total=len(entries),
@@ -581,6 +588,7 @@ class AuditLog:
             flagged_count=flagged,
             mean_confidence=round(total_conf / len(entries), 4),
             by_flag=by_flag,
+            by_platform=by_platform,
         )
 
     def to_page(

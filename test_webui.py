@@ -1451,5 +1451,53 @@ class WebAgentAuditOrderTest(unittest.TestCase):
         self.assertEqual(sender_ids, ["order_third"])
 
 
+class WebAgentStatsByPlatformTest(unittest.TestCase):
+    """/api/stats includes by_platform breakdown from audit log."""
+
+    @classmethod
+    def setUpClass(cls):
+        system = build_demo_system()
+        handler = type("_PlatHandler", (WebAgentHandler,), {"system": system})
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        body = json.dumps({"sender_id": "classmate_a", "conversation_id": "plat-test", "content": "资料在哪里？"}).encode()
+        req = urllib.request.Request(
+            f"http://{cls.host}:{cls.port}/api/message",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req):
+            pass
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _get_stats(self):
+        with urllib.request.urlopen(f"http://{self.host}:{self.port}/api/stats") as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def test_stats_includes_by_platform_key(self):
+        data = self._get_stats()
+        self.assertIn("by_platform", data)
+
+    def test_by_platform_is_dict(self):
+        data = self._get_stats()
+        self.assertIsInstance(data["by_platform"], dict)
+
+    def test_by_platform_counts_web_messages(self):
+        data = self._get_stats()
+        self.assertGreaterEqual(data["by_platform"].get("web", 0), 1)
+
+    def test_by_platform_total_matches_total_processed(self):
+        data = self._get_stats()
+        platform_total = sum(data["by_platform"].values())
+        self.assertEqual(platform_total, data["total"])
+
+
 if __name__ == "__main__":
     unittest.main()

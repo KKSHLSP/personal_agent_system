@@ -1458,5 +1458,79 @@ class AuditLogOrderTest(unittest.TestCase):
         self.assertEqual(page["total"], 0)
 
 
+class AuditEntryPlatformTest(unittest.TestCase):
+    """AuditEntry.platform field: captured from message, serialized, backward-compat."""
+
+    def _make_result(self, platform: str) -> "AgentResult":
+        system = build_demo_system()
+        msg = IncomingMessage("classmate_a", "conv-plat", "资料在哪里？", datetime.now(timezone.utc), platform)
+        return system.handle_message(msg)
+
+    def test_platform_stored_in_audit_entry(self):
+        log = AuditLog()
+        result = self._make_result("web")
+        log.record(result)
+        entry = log.snapshot()[0]
+        self.assertEqual(entry.platform, "web")
+
+    def test_platform_in_entry_dict(self):
+        log = AuditLog()
+        result = self._make_result("mock")
+        log.record(result)
+        page = log.to_page()
+        self.assertEqual(page["entries"][0]["platform"], "mock")
+
+    def test_different_platforms_recorded_separately(self):
+        log = AuditLog()
+        system = build_demo_system()
+        for plat in ("web", "mock", "web"):
+            msg = IncomingMessage("classmate_a", f"conv-{plat}", "hi", datetime.now(timezone.utc), plat)
+            log.record(system.handle_message(msg))
+        entries = log.snapshot()
+        self.assertEqual([e.platform for e in entries], ["web", "mock", "web"])
+
+    def test_backward_compat_missing_platform_field(self):
+        log = AuditLog()
+        result = self._make_result("web")
+        log.record(result)
+        d = AuditLog._entry_to_dict(log.snapshot()[0])
+        del d["platform"]
+        entry = AuditLog._dict_to_entry(d)
+        self.assertEqual(entry.platform, "")
+
+    def test_by_platform_in_stats(self):
+        log = AuditLog()
+        system = build_demo_system()
+        for plat in ("web", "mock", "web"):
+            msg = IncomingMessage("classmate_a", f"conv2-{plat}", "hi", datetime.now(timezone.utc), plat)
+            log.record(system.handle_message(msg))
+        stats = log.stats()
+        self.assertEqual(stats.by_platform.get("web"), 2)
+        self.assertEqual(stats.by_platform.get("mock"), 1)
+
+    def test_by_platform_empty_on_empty_log(self):
+        stats = AuditLog().stats()
+        self.assertEqual(stats.by_platform, {})
+
+    def test_empty_platform_string_excluded_from_by_platform(self):
+        log = AuditLog()
+        entry = AuditEntry(
+            timestamp=datetime.now(timezone.utc),
+            conversation_id="c",
+            sender_id="s",
+            action=ReplyAction.AUTO_REPLY,
+            reason="r",
+            confidence=0.9,
+            evidence=[],
+            safety_flags=[],
+            auto_sent=True,
+            platform="",
+        )
+        with log._lock:
+            log.entries.append(entry)
+        stats = log.stats()
+        self.assertNotIn("", stats.by_platform)
+
+
 if __name__ == "__main__":
     unittest.main()
