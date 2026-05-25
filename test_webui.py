@@ -617,5 +617,83 @@ class WebAgentAuditFilterTest(unittest.TestCase):
         self.assertEqual(len(data["entries"]), 1)
 
 
+class _IsolatedHandler(WebAgentHandler):
+    """Handler subclass used only by WebAgentInternalErrorTest to avoid shared state."""
+
+
+class WebAgentInternalErrorTest(unittest.TestCase):
+    """Verify that unexpected exceptions in do_GET / do_POST return JSON 500."""
+
+    @classmethod
+    def setUpClass(cls):
+        _IsolatedHandler.system = build_demo_system()
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), _IsolatedHandler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _url(self, path):
+        return f"http://{self.host}:{self.port}{path}"
+
+    def _post_and_read(self, path, payload):
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            self._url(path), data=body, method="POST",
+            headers={"content-type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as err:
+            with err:
+                return err.code, json.loads(err.read().decode("utf-8"))
+
+    def test_handle_message_exception_returns_json_500(self):
+        original = _IsolatedHandler.system.handle_message
+
+        def _raise(*_args):
+            raise RuntimeError("unexpected pipeline failure")
+
+        try:
+            _IsolatedHandler.system.handle_message = _raise
+            with self.assertLogs("webui", level="ERROR"):
+                status, body = self._post_and_read(
+                    "/api/message",
+                    {"sender_id": "x", "conversation_id": "y", "content": "hello"},
+                )
+        finally:
+            _IsolatedHandler.system.handle_message = original
+
+        self.assertEqual(status, 500)
+        self.assertIn("error", body)
+
+    def test_get_stats_exception_returns_json_500(self):
+        original = _IsolatedHandler.system.audit_log.stats
+
+        def _raise():
+            raise RuntimeError("stats boom")
+
+        try:
+            _IsolatedHandler.system.audit_log.stats = _raise
+            with self.assertLogs("webui", level="ERROR"):
+                try:
+                    with urllib.request.urlopen(self._url("/api/stats")) as resp:
+                        status, body = resp.status, json.loads(resp.read().decode("utf-8"))
+                except urllib.error.HTTPError as err:
+                    with err:
+                        status, body = err.code, json.loads(err.read().decode("utf-8"))
+        finally:
+            _IsolatedHandler.system.audit_log.stats = original
+
+        self.assertEqual(status, 500)
+        self.assertIn("error", body)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import logging
 import os
 import urllib.parse
 import urllib.request
@@ -24,6 +25,7 @@ MAX_CONTENT_LEN = 4_096
 MAX_ID_LEN = 128
 _ALLOWED_URL_SCHEMES = ("http://", "https://")
 
+logger = logging.getLogger(__name__)
 _SERVER_START_TIME = datetime.now(timezone.utc)
 
 
@@ -357,61 +359,65 @@ class WebAgentHandler(BaseHTTPRequestHandler):
     system = build_demo_system()
 
     def do_GET(self) -> None:
-        if self.path == "/" or self.path == "/index.html":
-            self._send_text(HTTPStatus.OK, HTML, "text/html; charset=utf-8")
-            return
-        _audit_parsed = urllib.parse.urlparse(self.path)
-        if _audit_parsed.path == "/api/audit":
-            _aq = urllib.parse.parse_qs(_audit_parsed.query)
-            try:
-                _offset = max(0, int(_aq.get("offset", ["0"])[0]))
-            except ValueError:
-                _offset = 0
-            try:
-                _limit = max(0, int(_aq.get("limit", ["0"])[0]))
-            except ValueError:
-                _limit = 0
-            _sender_id = (_aq.get("sender_id", [""])[0]).strip()
-            _action = (_aq.get("action", [""])[0]).strip()
-            self._send_json(HTTPStatus.OK, self.system.audit_log.to_page(
-                offset=_offset, limit=_limit, sender_id=_sender_id, action=_action,
-            ))
-            return
-        if self.path == "/api/health":
-            now = datetime.now(timezone.utc)
-            stats = self.system.audit_log.stats()
-            self._send_json(HTTPStatus.OK, {
-                "status": "ok",
-                "started_at": _SERVER_START_TIME.isoformat(),
-                "uptime_seconds": (now - _SERVER_START_TIME).total_seconds(),
-                "total_processed": stats.total,
-            })
-            return
-        if self.path == "/api/stats":
-            s = self.system.audit_log.stats()
-            rl = self.system.rate_limiter
-            self._send_json(HTTPStatus.OK, {
-                "total": s.total,
-                "by_action": s.by_action,
-                "auto_sent_count": s.auto_sent_count,
-                "flagged_count": s.flagged_count,
-                "mean_confidence": s.mean_confidence,
-                "rate_limited_count": rl.total_rejected() if rl is not None else 0,
-            })
-            return
-        parsed = urllib.parse.urlparse(self.path)
-        if parsed.path == "/api/local-ai-models":
-            query = urllib.parse.parse_qs(parsed.query)
-            base_url = query.get("base_url", ["http://127.0.0.1:8001"])[0]
-            api_key = query.get("api_key", [""])[0]
-            if not any(base_url.startswith(s) for s in _ALLOWED_URL_SCHEMES):
-                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "base_url must start with http:// or https://"})
+        try:
+            if self.path == "/" or self.path == "/index.html":
+                self._send_text(HTTPStatus.OK, HTML, "text/html; charset=utf-8")
                 return
-            result = list_local_ai_models(base_url, api_key)
-            status = HTTPStatus.OK if result["ok"] else HTTPStatus.BAD_GATEWAY
-            self._send_json(status, result)
-            return
-        self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            _audit_parsed = urllib.parse.urlparse(self.path)
+            if _audit_parsed.path == "/api/audit":
+                _aq = urllib.parse.parse_qs(_audit_parsed.query)
+                try:
+                    _offset = max(0, int(_aq.get("offset", ["0"])[0]))
+                except ValueError:
+                    _offset = 0
+                try:
+                    _limit = max(0, int(_aq.get("limit", ["0"])[0]))
+                except ValueError:
+                    _limit = 0
+                _sender_id = (_aq.get("sender_id", [""])[0]).strip()
+                _action = (_aq.get("action", [""])[0]).strip()
+                self._send_json(HTTPStatus.OK, self.system.audit_log.to_page(
+                    offset=_offset, limit=_limit, sender_id=_sender_id, action=_action,
+                ))
+                return
+            if self.path == "/api/health":
+                now = datetime.now(timezone.utc)
+                stats = self.system.audit_log.stats()
+                self._send_json(HTTPStatus.OK, {
+                    "status": "ok",
+                    "started_at": _SERVER_START_TIME.isoformat(),
+                    "uptime_seconds": (now - _SERVER_START_TIME).total_seconds(),
+                    "total_processed": stats.total,
+                })
+                return
+            if self.path == "/api/stats":
+                s = self.system.audit_log.stats()
+                rl = self.system.rate_limiter
+                self._send_json(HTTPStatus.OK, {
+                    "total": s.total,
+                    "by_action": s.by_action,
+                    "auto_sent_count": s.auto_sent_count,
+                    "flagged_count": s.flagged_count,
+                    "mean_confidence": s.mean_confidence,
+                    "rate_limited_count": rl.total_rejected() if rl is not None else 0,
+                })
+                return
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path == "/api/local-ai-models":
+                query = urllib.parse.parse_qs(parsed.query)
+                base_url = query.get("base_url", ["http://127.0.0.1:8001"])[0]
+                api_key = query.get("api_key", [""])[0]
+                if not any(base_url.startswith(s) for s in _ALLOWED_URL_SCHEMES):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "base_url must start with http:// or https://"})
+                    return
+                result = list_local_ai_models(base_url, api_key)
+                status = HTTPStatus.OK if result["ok"] else HTTPStatus.BAD_GATEWAY
+                self._send_json(status, result)
+                return
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+        except Exception:
+            logger.exception("Unhandled GET request failure")
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal server error"})
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
@@ -455,6 +461,9 @@ class WebAgentHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": f"request body exceeds {MAX_BODY_BYTES} bytes"})
         except json.JSONDecodeError:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid json"})
+        except Exception:
+            logger.exception("Unhandled message request failure")
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal server error"})
 
     def _handle_local_ai_test(self) -> None:
         try:
@@ -476,6 +485,9 @@ class WebAgentHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": f"request body exceeds {MAX_BODY_BYTES} bytes"})
         except json.JSONDecodeError:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid json"})
+        except Exception:
+            logger.exception("Unhandled local AI test failure")
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal server error"})
 
     def log_message(self, format: str, *args: object) -> None:
         return
