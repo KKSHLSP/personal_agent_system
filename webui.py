@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
 import os
+import uuid
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -538,6 +539,7 @@ class WebAgentHandler(BaseHTTPRequestHandler):
         self.send_header("cache-control", "no-store")
         self.send_header("x-content-type-options", "nosniff")
         self.send_header("x-frame-options", "DENY")
+        self.send_header("x-request-id", uuid.uuid4().hex)
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
         self.end_headers()

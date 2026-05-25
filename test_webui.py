@@ -1054,5 +1054,80 @@ class WebAgentMethodNotAllowedTest(unittest.TestCase):
         self.assertEqual(headers.get("Cache-Control"), "no-store")
 
 
+class WebAgentRequestIdTest(unittest.TestCase):
+    """X-Request-ID header is present on every response and is a 32-char hex string."""
+
+    @classmethod
+    def setUpClass(cls):
+        system = build_demo_system()
+        handler = type("_RIDHandler", (WebAgentHandler,), {"system": system})
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _url(self, path: str) -> str:
+        return f"http://{self.host}:{self.port}{path}"
+
+    def _get_header(self, path: str) -> str:
+        with urllib.request.urlopen(self._url(path)) as response:
+            return response.headers.get("x-request-id", "")
+
+    def _post_header(self, path: str, payload: dict, expect_error: bool = False) -> str:
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            self._url(path), data=body, method="POST",
+            headers={"content-type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.headers.get("x-request-id", "")
+        except urllib.error.HTTPError as error:
+            with error:
+                return error.headers.get("x-request-id", "")
+
+    def _is_hex32(self, value: str) -> bool:
+        return len(value) == 32 and all(c in "0123456789abcdef" for c in value)
+
+    def test_get_html_has_request_id(self):
+        rid = self._get_header("/")
+        self.assertTrue(self._is_hex32(rid), f"Expected 32-char hex, got {rid!r}")
+
+    def test_get_health_has_request_id(self):
+        rid = self._get_header("/api/health")
+        self.assertTrue(self._is_hex32(rid), f"Expected 32-char hex, got {rid!r}")
+
+    def test_get_stats_has_request_id(self):
+        rid = self._get_header("/api/stats")
+        self.assertTrue(self._is_hex32(rid))
+
+    def test_post_message_200_has_request_id(self):
+        rid = self._post_header("/api/message", {"content": "hello", "sender_id": "tester"})
+        self.assertTrue(self._is_hex32(rid))
+
+    def test_post_message_400_has_request_id(self):
+        rid = self._post_header("/api/message", {}, expect_error=True)
+        self.assertTrue(self._is_hex32(rid))
+
+    def test_get_404_has_request_id(self):
+        try:
+            urllib.request.urlopen(self._url("/no/such/path"))
+        except urllib.error.HTTPError as error:
+            with error:
+                rid = error.headers.get("x-request-id", "")
+        self.assertTrue(self._is_hex32(rid))
+
+    def test_two_requests_get_different_ids(self):
+        rid1 = self._get_header("/api/health")
+        rid2 = self._get_header("/api/health")
+        self.assertNotEqual(rid1, rid2)
+
+
 if __name__ == "__main__":
     unittest.main()
