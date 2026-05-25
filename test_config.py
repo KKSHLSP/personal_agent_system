@@ -1,0 +1,432 @@
+"""Tests for the config module and its wiring into agent components."""
+
+from datetime import datetime, timezone
+import json
+import os
+import tempfile
+import unittest
+
+from config import (
+    AgentConfig,
+    ConfidenceConfig,
+    KnowledgeConfig,
+    RateLimitConfig,
+    SafetyConfig,
+    WebUIConfig,
+    load_config,
+)
+from agent import (
+    IncomingMessage,
+    KnowledgeBase,
+    KnowledgeItem,
+    KnowledgeMatch,
+    MessageRouter,
+    PermissionPolicy,
+    PermissionProfile,
+    ReplyAction,
+    SafetyPrivacyGuard,
+    build_demo_system,
+)
+
+
+def _msg(content: str, sender_id: str = "alice") -> IncomingMessage:
+    return IncomingMessage(sender_id, "conv-cfg", content, datetime.now(timezone.utc), "test")
+
+
+# ---------------------------------------------------------------------------
+# Default values
+# ---------------------------------------------------------------------------
+
+class ConfigDefaultsTest(unittest.TestCase):
+    def setUp(self):
+        self._config = load_config()
+
+    def test_rate_limit_defaults(self):
+        self.assertEqual(self._config.rate_limit.max_messages, 5)
+        self.assertEqual(self._config.rate_limit.window_seconds, 60.0)
+
+    def test_confidence_defaults(self):
+        c = self._config.confidence
+        self.assertAlmostEqual(c.auto_reply_threshold, 0.7)
+        self.assertAlmostEqual(c.base_score, 0.55)
+        self.assertAlmostEqual(c.score_multiplier, 0.1)
+        self.assertAlmostEqual(c.cap, 0.95)
+
+    def test_safety_defaults_include_chinese_and_english_patterns(self):
+        patterns = self._config.safety.sensitive_patterns
+        self.assertEqual(len(patterns), 2)
+        self.assertTrue(any("密码" in p for p in patterns))
+        self.assertTrue(any("password" in p for p in patterns))
+
+    def test_knowledge_defaults(self):
+        self.assertEqual(self._config.knowledge.search_limit, 3)
+        self.assertEqual(self._config.knowledge.max_recent_messages, 10)
+
+    def test_webui_defaults(self):
+        w = self._config.webui
+        self.assertEqual(w.host, "127.0.0.1")
+        self.assertEqual(w.port, 8000)
+        self.assertIn("8001", w.local_ai_url)
+
+    def test_no_path_returns_defaults(self):
+        config = load_config(None)
+        self.assertEqual(config.rate_limit.max_messages, 5)
+
+    def test_config_sections_are_independent_instances(self):
+        c1 = load_config()
+        c2 = load_config()
+        c1.rate_limit.max_messages = 999
+        self.assertEqual(c2.rate_limit.max_messages, 5)
+
+
+# ---------------------------------------------------------------------------
+# JSON file loading
+# ---------------------------------------------------------------------------
+
+class ConfigJsonLoadingTest(unittest.TestCase):
+    def _write_json(self, data: dict) -> str:
+        fp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump(data, fp, ensure_ascii=False)
+        fp.close()
+        return fp.name
+
+    def tearDown(self):
+        pass  # individual tests clean up their own files
+
+    def test_load_rate_limit_from_json(self):
+        path = self._write_json({"rate_limit": {"max_messages": 20, "window_seconds": 30.0}})
+        try:
+            config = load_config(path)
+            self.assertEqual(config.rate_limit.max_messages, 20)
+            self.assertAlmostEqual(config.rate_limit.window_seconds, 30.0)
+        finally:
+            os.unlink(path)
+
+    def test_partial_json_leaves_unspecified_fields_at_default(self):
+        path = self._write_json({"rate_limit": {"max_messages": 15}})
+        try:
+            config = load_config(path)
+            self.assertEqual(config.rate_limit.max_messages, 15)
+            self.assertAlmostEqual(config.rate_limit.window_seconds, 60.0)  # untouched
+        finally:
+            os.unlink(path)
+
+    def test_partial_json_leaves_unspecified_sections_at_default(self):
+        path = self._write_json({"webui": {"port": 9090}})
+        try:
+            config = load_config(path)
+            self.assertEqual(config.webui.port, 9090)
+            self.assertEqual(config.rate_limit.max_messages, 5)  # untouched
+        finally:
+            os.unlink(path)
+
+    def test_missing_file_returns_defaults(self):
+        config = load_config("/nonexistent/path/agent.json")
+        self.assertEqual(config.rate_limit.max_messages, 5)
+
+    def test_unknown_section_in_json_is_ignored(self):
+        path = self._write_json({"totally_unknown": {"foo": "bar"}})
+        try:
+            config = load_config(path)  # must not raise
+            self.assertEqual(config.rate_limit.max_messages, 5)
+        finally:
+            os.unlink(path)
+
+    def test_unknown_key_within_section_is_ignored(self):
+        path = self._write_json({"rate_limit": {"max_messages": 10, "no_such_key": 99}})
+        try:
+            config = load_config(path)
+            self.assertEqual(config.rate_limit.max_messages, 10)
+        finally:
+            os.unlink(path)
+
+    def test_safety_patterns_overridable_via_json(self):
+        path = self._write_json({"safety": {"sensitive_patterns": [r"my_secret_word"]}})
+        try:
+            config = load_config(path)
+            self.assertEqual(config.safety.sensitive_patterns, [r"my_secret_word"])
+        finally:
+            os.unlink(path)
+
+    def test_all_confidence_fields_loadable(self):
+        path = self._write_json({
+            "confidence": {
+                "auto_reply_threshold": 0.85,
+                "base_score": 0.6,
+                "score_multiplier": 0.15,
+                "cap": 0.98,
+            }
+        })
+        try:
+            config = load_config(path)
+            self.assertAlmostEqual(config.confidence.auto_reply_threshold, 0.85)
+            self.assertAlmostEqual(config.confidence.base_score, 0.6)
+            self.assertAlmostEqual(config.confidence.score_multiplier, 0.15)
+            self.assertAlmostEqual(config.confidence.cap, 0.98)
+        finally:
+            os.unlink(path)
+
+    def test_empty_json_file_returns_defaults(self):
+        fp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
+        fp.write("{}")
+        fp.close()
+        try:
+            config = load_config(fp.name)
+            self.assertEqual(config.rate_limit.max_messages, 5)
+        finally:
+            os.unlink(fp.name)
+
+
+# ---------------------------------------------------------------------------
+# Environment variable overrides
+# ---------------------------------------------------------------------------
+
+_ENV_KEYS = [
+    "AGENT_RATE_LIMIT_MAX_MESSAGES",
+    "AGENT_RATE_LIMIT_WINDOW_SECONDS",
+    "AGENT_CONFIDENCE_AUTO_REPLY_THRESHOLD",
+    "AGENT_CONFIDENCE_BASE_SCORE",
+    "AGENT_CONFIDENCE_SCORE_MULTIPLIER",
+    "AGENT_CONFIDENCE_CAP",
+    "AGENT_KNOWLEDGE_SEARCH_LIMIT",
+    "AGENT_KNOWLEDGE_MAX_RECENT_MESSAGES",
+    "AGENT_WEBUI_HOST",
+    "AGENT_WEBUI_PORT",
+    "AGENT_WEBUI_LOCAL_AI_URL",
+]
+
+
+class ConfigEnvVarTest(unittest.TestCase):
+    def setUp(self):
+        self._saved = {k: os.environ.pop(k) for k in _ENV_KEYS if k in os.environ}
+
+    def tearDown(self):
+        for k in _ENV_KEYS:
+            os.environ.pop(k, None)
+        os.environ.update(self._saved)
+
+    def test_env_overrides_rate_limit_max_messages(self):
+        os.environ["AGENT_RATE_LIMIT_MAX_MESSAGES"] = "42"
+        self.assertEqual(load_config().rate_limit.max_messages, 42)
+
+    def test_env_overrides_rate_limit_window_seconds(self):
+        os.environ["AGENT_RATE_LIMIT_WINDOW_SECONDS"] = "120.5"
+        self.assertAlmostEqual(load_config().rate_limit.window_seconds, 120.5)
+
+    def test_env_overrides_confidence_threshold(self):
+        os.environ["AGENT_CONFIDENCE_AUTO_REPLY_THRESHOLD"] = "0.9"
+        self.assertAlmostEqual(load_config().confidence.auto_reply_threshold, 0.9)
+
+    def test_env_overrides_webui_port(self):
+        os.environ["AGENT_WEBUI_PORT"] = "9999"
+        self.assertEqual(load_config().webui.port, 9999)
+
+    def test_env_overrides_webui_host(self):
+        os.environ["AGENT_WEBUI_HOST"] = "0.0.0.0"
+        self.assertEqual(load_config().webui.host, "0.0.0.0")
+
+    def test_env_overrides_knowledge_search_limit(self):
+        os.environ["AGENT_KNOWLEDGE_SEARCH_LIMIT"] = "7"
+        self.assertEqual(load_config().knowledge.search_limit, 7)
+
+    def test_env_overrides_knowledge_max_recent_messages(self):
+        os.environ["AGENT_KNOWLEDGE_MAX_RECENT_MESSAGES"] = "25"
+        self.assertEqual(load_config().knowledge.max_recent_messages, 25)
+
+    def test_invalid_int_env_var_is_silently_ignored(self):
+        os.environ["AGENT_WEBUI_PORT"] = "not-a-number"
+        self.assertEqual(load_config().webui.port, 8000)
+
+    def test_invalid_float_env_var_is_silently_ignored(self):
+        os.environ["AGENT_RATE_LIMIT_WINDOW_SECONDS"] = "bad"
+        self.assertAlmostEqual(load_config().rate_limit.window_seconds, 60.0)
+
+    def test_env_wins_over_json_file(self):
+        fp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump({"rate_limit": {"max_messages": 10}}, fp)
+        fp.close()
+        os.environ["AGENT_RATE_LIMIT_MAX_MESSAGES"] = "99"
+        try:
+            config = load_config(fp.name)
+            self.assertEqual(config.rate_limit.max_messages, 99)
+        finally:
+            os.unlink(fp.name)
+
+    def test_env_overrides_local_ai_url(self):
+        os.environ["AGENT_WEBUI_LOCAL_AI_URL"] = "http://localhost:11434/v1"
+        self.assertEqual(load_config().webui.local_ai_url, "http://localhost:11434/v1")
+
+
+# ---------------------------------------------------------------------------
+# Wiring: config values flow into live agent components
+# ---------------------------------------------------------------------------
+
+class SafetyGuardWiringTest(unittest.TestCase):
+    def test_default_patterns_block_chinese_keyword(self):
+        guard = SafetyPrivacyGuard()
+        flags = guard.inspect_message(_msg("你的密码是多少？"))
+        self.assertIn("sensitive_request", flags)
+
+    def test_default_patterns_block_english_keyword_case_insensitive(self):
+        guard = SafetyPrivacyGuard()
+        flags = guard.inspect_message(_msg("What is your PASSWORD?"))
+        self.assertIn("sensitive_request", flags)
+
+    def test_custom_patterns_replace_defaults_entirely(self):
+        guard = SafetyPrivacyGuard(sensitive_patterns=[r"launch_code"])
+        self.assertIn("sensitive_request", guard.inspect_message(_msg("give me the launch_code")))
+        # default keywords no longer active
+        self.assertNotIn("sensitive_request", guard.inspect_message(_msg("你的密码是多少？")))
+
+    def test_empty_patterns_list_never_flags(self):
+        guard = SafetyPrivacyGuard(sensitive_patterns=[])
+        flags = guard.inspect_message(_msg("password token secret 密码"))
+        self.assertNotIn("sensitive_request", flags)
+
+    def test_config_safety_patterns_wired_into_guard(self):
+        config = load_config()
+        config.safety.sensitive_patterns = [r"classified_data"]
+        system = build_demo_system(config)
+        result = system.handle_message(
+            IncomingMessage("classmate_a", "cfg-safe-conv", "where is the classified_data?",
+                            datetime.now(timezone.utc), "test")
+        )
+        self.assertEqual(result.decision.action, ReplyAction.REJECT)
+        self.assertIn("sensitive_request", result.draft.safety_flags)
+
+
+class PermissionPolicyWiringTest(unittest.TestCase):
+    def _make_match(self, score: int) -> KnowledgeMatch:
+        item = KnowledgeItem("id", "title", "content", {"public"}, {"kw"})
+        return KnowledgeMatch(item=item, score=score, matched_keywords={"kw"})
+
+    def _perm(self, auto_reply: bool = True) -> PermissionProfile:
+        return PermissionProfile("alice", {"public"}, auto_reply_enabled=auto_reply)
+
+    def test_default_threshold_allows_auto_reply_at_score_2(self):
+        # score=2 → confidence = min(0.95, 0.55 + 2*0.1) = 0.75 ≥ 0.7 → AUTO_REPLY
+        policy = PermissionPolicy()
+        decision = policy.decide(_msg("q"), self._perm(True), [self._make_match(2)], [])
+        self.assertEqual(decision.action, ReplyAction.AUTO_REPLY)
+
+    def test_high_threshold_blocks_auto_reply_at_same_score(self):
+        # same score=2 → confidence=0.75 < 0.9 → SUGGEST_ONLY
+        policy = PermissionPolicy(auto_reply_threshold=0.9)
+        decision = policy.decide(_msg("q"), self._perm(True), [self._make_match(2)], [])
+        self.assertEqual(decision.action, ReplyAction.SUGGEST_ONLY)
+
+    def test_low_threshold_auto_replies_at_score_1(self):
+        # score=1 → confidence = min(0.95, 0.55 + 1*0.1) = 0.65 ≥ 0.6 → AUTO_REPLY
+        policy = PermissionPolicy(auto_reply_threshold=0.6)
+        decision = policy.decide(_msg("q"), self._perm(True), [self._make_match(1)], [])
+        self.assertEqual(decision.action, ReplyAction.AUTO_REPLY)
+
+    def test_custom_cap_limits_confidence(self):
+        policy = PermissionPolicy(cap=0.7, auto_reply_threshold=0.65)
+        # score=40 → uncapped = 0.55 + 4.0 > 0.7, capped to 0.7
+        decision = policy.decide(_msg("q"), self._perm(True), [self._make_match(40)], [])
+        self.assertAlmostEqual(decision.confidence, 0.7)
+
+    def test_config_confidence_threshold_wired_into_policy(self):
+        config = load_config()
+        config.confidence.auto_reply_threshold = 0.999  # impossible to reach
+        system = build_demo_system(config)
+        result = system.handle_message(
+            IncomingMessage("classmate_a", "cfg-conf-conv", "资料在哪里？",
+                            datetime.now(timezone.utc), "test")
+        )
+        # classmate_a has auto_reply_enabled=True, but threshold unreachable → SUGGEST_ONLY
+        self.assertEqual(result.decision.action, ReplyAction.SUGGEST_ONLY)
+
+
+class MessageRouterWiringTest(unittest.TestCase):
+    def _perm(self) -> PermissionProfile:
+        return PermissionProfile("user", {"public"}, auto_reply_enabled=False)
+
+    def test_custom_max_recent_messages_bounds_history(self):
+        router = MessageRouter(max_recent_messages=3)
+        perm = self._perm()
+        for i in range(7):
+            msg = IncomingMessage("user", "conv", f"msg-{i}", datetime.now(timezone.utc), "mock")
+            ctx = router.get_context(msg, perm)
+        self.assertLessEqual(len(ctx.recent_messages), 3)
+
+    def test_default_max_recent_messages_is_10(self):
+        router = MessageRouter()
+        perm = self._perm()
+        for i in range(15):
+            msg = IncomingMessage("user", "conv", f"msg-{i}", datetime.now(timezone.utc), "mock")
+            ctx = router.get_context(msg, perm)
+        self.assertLessEqual(len(ctx.recent_messages), 10)
+
+    def test_config_max_recent_messages_wired_into_build_demo(self):
+        config = load_config()
+        config.knowledge.max_recent_messages = 2
+        system = build_demo_system(config)
+        for i in range(5):
+            system.handle_message(
+                IncomingMessage("classmate_a", "cfg-router-conv", f"资料在哪里 {i}？",
+                                datetime.now(timezone.utc), "test")
+            )
+        ctx = system.router._contexts.get("cfg-router-conv")
+        self.assertIsNotNone(ctx)
+        self.assertLessEqual(len(ctx.recent_messages), 2)
+
+
+class KnowledgeSearchLimitTest(unittest.TestCase):
+    def _make_kb(self) -> KnowledgeBase:
+        return KnowledgeBase([
+            KnowledgeItem(f"item_{i}", f"课程资料 {i}", f"内容 {i}", {"public"}, {"资料", f"词{i}"})
+            for i in range(10)
+        ])
+
+    def test_search_limit_1_returns_at_most_one_result(self):
+        kb = self._make_kb()
+        matches = kb.search("资料", {"public"}, limit=1)
+        self.assertLessEqual(len(matches), 1)
+
+    def test_search_limit_5_returns_at_most_five(self):
+        kb = self._make_kb()
+        matches = kb.search("资料", {"public"}, limit=5)
+        self.assertLessEqual(len(matches), 5)
+
+    def test_search_default_limit_is_3(self):
+        kb = self._make_kb()
+        matches = kb.search("资料", {"public"})
+        self.assertLessEqual(len(matches), 3)
+
+    def test_config_search_limit_wired_into_build_demo(self):
+        config = load_config()
+        config.knowledge.search_limit = 1
+        system = build_demo_system(config)
+
+        result = system.handle_message(
+            IncomingMessage("classmate_b", "cfg-search-limit", "资料 作业",
+                            datetime.now(timezone.utc), "test")
+        )
+
+        self.assertLessEqual(len(result.draft.evidence), 2)
+
+
+class RateLimitConfigWiringTest(unittest.TestCase):
+    def test_config_rate_limit_wired_into_build_demo(self):
+        config = load_config()
+        config.rate_limit.max_messages = 1
+        config.rate_limit.window_seconds = 60.0
+        system = build_demo_system(config)
+
+        system.handle_message(
+            IncomingMessage("classmate_a", "cfg-rate-limit-1", "资料在哪里？",
+                            datetime.now(timezone.utc), "test")
+        )
+        result = system.handle_message(
+            IncomingMessage("classmate_a", "cfg-rate-limit-2", "作业什么时候提交？",
+                            datetime.now(timezone.utc), "test")
+        )
+
+        self.assertEqual(result.decision.action, ReplyAction.REJECT)
+        self.assertIn("rate_limited", result.draft.safety_flags)
+
+
+if __name__ == "__main__":
+    unittest.main()

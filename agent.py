@@ -14,11 +14,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Callable, Iterable, Protocol
+from typing import TYPE_CHECKING, Callable, Iterable, Protocol
 import json
 import re
 import threading
 import time
+
+if TYPE_CHECKING:
+    from config import AgentConfig
 
 
 class ReplyAction(str, Enum):
@@ -133,9 +136,10 @@ class MockChatAdapter:
 
 
 class MessageRouter:
-    def __init__(self) -> None:
+    def __init__(self, max_recent_messages: int = 10) -> None:
         self._contexts: dict[str, ConversationContext] = {}
         self._lock = threading.Lock()
+        self._max_recent = max_recent_messages
 
     def get_context(
         self, message: IncomingMessage, permission: PermissionProfile
@@ -151,7 +155,7 @@ class MessageRouter:
                 self._contexts[message.conversation_id] = context
 
             context.recent_messages.append(message)
-            context.recent_messages = context.recent_messages[-10:]
+            context.recent_messages = context.recent_messages[-self._max_recent:]
             return context
 
 
@@ -173,6 +177,18 @@ class PermissionStore:
 
 
 class PermissionPolicy:
+    def __init__(
+        self,
+        auto_reply_threshold: float = 0.7,
+        base_score: float = 0.55,
+        score_multiplier: float = 0.1,
+        cap: float = 0.95,
+    ) -> None:
+        self._auto_reply_threshold = auto_reply_threshold
+        self._base_score = base_score
+        self._score_multiplier = score_multiplier
+        self._cap = cap
+
     def decide(
         self,
         message: IncomingMessage,
@@ -204,8 +220,8 @@ class PermissionPolicy:
                 True,
             )
 
-        confidence = min(0.95, 0.55 + matches[0].score * 0.1)
-        if permission.auto_reply_enabled and confidence >= 0.7:
+        confidence = min(self._cap, self._base_score + matches[0].score * self._score_multiplier)
+        if permission.auto_reply_enabled and confidence >= self._auto_reply_threshold:
             return ReplyDecision(
                 ReplyAction.AUTO_REPLY,
                 "联系人允许自动回复，且知识库命中可信内容。",
@@ -291,14 +307,18 @@ class ReplyGenerator:
 
 
 class SafetyPrivacyGuard:
-    SENSITIVE_PATTERNS = (
-        re.compile(r"密码|口令|验证码|身份证|银行卡|私聊记录|聊天记录"),
-        re.compile(r"password|secret|token|otp", re.IGNORECASE),
-    )
+    _DEFAULT_PATTERNS: list[str] = [
+        r"密码|口令|验证码|身份证|银行卡|私聊记录|聊天记录",
+        r"password|secret|token|otp",
+    ]
+
+    def __init__(self, sensitive_patterns: list[str] | None = None) -> None:
+        raw = sensitive_patterns if sensitive_patterns is not None else self._DEFAULT_PATTERNS
+        self._patterns = tuple(re.compile(p, re.IGNORECASE) for p in raw)
 
     def inspect_message(self, message: IncomingMessage) -> list[str]:
         flags: list[str] = []
-        if any(pattern.search(message.content) for pattern in self.SENSITIVE_PATTERNS):
+        if any(pattern.search(message.content) for pattern in self._patterns):
             flags.append("sensitive_request")
         return flags
 
@@ -458,6 +478,7 @@ class PersonalAgentSystem:
         guard: SafetyPrivacyGuard,
         audit_log: AuditLog,
         rate_limiter: RateLimiter | None = None,
+        knowledge_search_limit: int = 3,
     ) -> None:
         self.adapter = adapter
         self.permission_store = permission_store
@@ -468,6 +489,7 @@ class PersonalAgentSystem:
         self.guard = guard
         self.audit_log = audit_log
         self._rate_limiter = rate_limiter
+        self._knowledge_search_limit = knowledge_search_limit
 
     def handle_message(self, message: IncomingMessage) -> AgentResult:
         if self._rate_limiter is not None and not self._rate_limiter.is_allowed(message.sender_id):
@@ -490,7 +512,11 @@ class PersonalAgentSystem:
         permission = self.permission_store.get_profile(message.sender_id)
         context = self.router.get_context(message, permission)
         message_flags = self.guard.inspect_message(message)
-        matches = self.knowledge_base.search(message.content, context.visible_knowledge_tags)
+        matches = self.knowledge_base.search(
+            message.content,
+            context.visible_knowledge_tags,
+            limit=self._knowledge_search_limit,
+        )
         knowledge_flags = self.guard.inspect_matches(matches)
         safety_flags = message_flags + knowledge_flags
         decision = self.policy.decide(message, permission, matches, safety_flags)
@@ -523,7 +549,11 @@ class PersonalAgentSystem:
         return [self.handle_message(message) for message in self.adapter.receive_messages()]
 
 
-def build_demo_system() -> PersonalAgentSystem:
+def build_demo_system(config: AgentConfig | None = None) -> PersonalAgentSystem:
+    if config is None:
+        from config import load_config
+        config = load_config()
+
     now = datetime.now(timezone.utc)
     adapter = MockChatAdapter(
         [
@@ -577,12 +607,19 @@ def build_demo_system() -> PersonalAgentSystem:
     return PersonalAgentSystem(
         adapter=adapter,
         permission_store=permissions,
-        router=MessageRouter(),
+        router=MessageRouter(max_recent_messages=config.knowledge.max_recent_messages),
         knowledge_base=knowledge,
-        policy=PermissionPolicy(),
+        policy=PermissionPolicy(
+            auto_reply_threshold=config.confidence.auto_reply_threshold,
+            base_score=config.confidence.base_score,
+            score_multiplier=config.confidence.score_multiplier,
+            cap=config.confidence.cap,
+        ),
         generator=ReplyGenerator(style),
-        guard=SafetyPrivacyGuard(),
+        guard=SafetyPrivacyGuard(sensitive_patterns=config.safety.sensitive_patterns),
         audit_log=AuditLog(),
+        rate_limiter=RateLimiter(config.rate_limit.max_messages, config.rate_limit.window_seconds),
+        knowledge_search_limit=config.knowledge.search_limit,
     )
 
 
