@@ -228,7 +228,7 @@ HTML = """<!doctype html>
 
     async function loadAudit() {
       try {
-        const response = await fetch("/api/audit");
+        const response = await fetch("/api/audit?order=desc");
         const data = await response.json();
         const entries = Array.isArray(data) ? data : data.entries || [];
         if (!entries.length) {
@@ -236,7 +236,7 @@ HTML = """<!doctype html>
           return;
         }
         auditList.innerHTML = "";
-        for (const entry of entries.slice().reverse()) {
+        for (const entry of entries) {
           const item = document.createElement("div");
           item.className = "audit-item";
           const title = document.createElement("strong");
@@ -396,9 +396,10 @@ class WebAgentHandler(BaseHTTPRequestHandler):
                 _action = (_aq.get("action", [""])[0]).strip()
                 _since = (_aq.get("since", [""])[0]).strip()
                 _until = (_aq.get("until", [""])[0]).strip()
+                _order = (_aq.get("order", ["asc"])[0]).strip().lower()
                 self._send_json(HTTPStatus.OK, self.system.audit_log.to_page(
                     offset=_offset, limit=_limit, sender_id=_sender_id, action=_action,
-                    since=_since, until=_until,
+                    since=_since, until=_until, order=_order,
                 ))
                 return
             if self.path == "/api/health":

@@ -1377,5 +1377,79 @@ class WebAgentCspHeaderTest(unittest.TestCase):
         self.assertIn("frame-ancestors 'none'", csp)
 
 
+class WebAgentAuditOrderTest(unittest.TestCase):
+    """Integration tests for ?order=asc|desc on /api/audit."""
+
+    @classmethod
+    def setUpClass(cls):
+        WebAgentHandler.system = build_demo_system()
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), WebAgentHandler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        # Send 3 messages in deterministic order; store senders for assertion.
+        cls.senders = ["order_first", "order_second", "order_third"]
+        for sid in cls.senders:
+            body = json.dumps({"sender_id": sid, "conversation_id": f"oc-{sid}", "content": "资料在哪里？"}).encode()
+            req = urllib.request.Request(
+                f"http://{cls.host}:{cls.port}/api/message",
+                data=body,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req):
+                pass
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _get_audit(self, query=""):
+        url = f"http://{self.host}:{self.port}/api/audit{query}"
+        with urllib.request.urlopen(url) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def _sender_ids_from_page(self, data):
+        return [e["sender_id"] for e in data["entries"] if e["sender_id"] in self.senders]
+
+    def test_default_order_is_asc(self):
+        status, data = self._get_audit()
+        self.assertEqual(status, 200)
+        sender_ids = self._sender_ids_from_page(data)
+        self.assertEqual(sender_ids, self.senders)
+
+    def test_order_asc_explicit(self):
+        status, data = self._get_audit("?order=asc")
+        self.assertEqual(status, 200)
+        sender_ids = self._sender_ids_from_page(data)
+        self.assertEqual(sender_ids, self.senders)
+
+    def test_order_desc_newest_first(self):
+        status, data = self._get_audit("?order=desc")
+        self.assertEqual(status, 200)
+        sender_ids = self._sender_ids_from_page(data)
+        self.assertEqual(sender_ids, list(reversed(self.senders)))
+
+    def test_order_desc_echoed_in_response(self):
+        _, data = self._get_audit("?order=desc")
+        self.assertEqual(data.get("order"), "desc")
+
+    def test_order_asc_not_echoed_in_response(self):
+        _, data = self._get_audit("?order=asc")
+        self.assertNotIn("order", data)
+
+    def test_invalid_order_defaults_to_asc(self):
+        status, data = self._get_audit("?order=random")
+        self.assertEqual(status, 200)
+        sender_ids = self._sender_ids_from_page(data)
+        self.assertEqual(sender_ids, self.senders)
+
+    def test_order_desc_with_limit_returns_newest(self):
+        _, data = self._get_audit("?order=desc&limit=1")
+        sender_ids = self._sender_ids_from_page(data)
+        self.assertEqual(sender_ids, ["order_third"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1381,5 +1381,82 @@ class AuditLogMaxEntriesTest(unittest.TestCase):
             os.unlink(path)
 
 
+class AuditLogOrderTest(unittest.TestCase):
+    """AuditLog.to_page() order parameter: asc (default) and desc."""
+
+    def _make_log_with_senders(self, senders: list[str]) -> AuditLog:
+        log = AuditLog()
+        system = build_demo_system()
+        for sid in senders:
+            msg = IncomingMessage(sid, f"conv-{sid}", "hi", datetime.now(timezone.utc), "mock")
+            log.record(system.handle_message(msg))
+        return log
+
+    def test_default_order_is_asc_oldest_first(self):
+        log = self._make_log_with_senders(["alice", "bob", "carol"])
+        page = log.to_page()
+        sender_ids = [e["sender_id"] for e in page["entries"]]
+        self.assertEqual(sender_ids, ["alice", "bob", "carol"])
+
+    def test_order_asc_explicit(self):
+        log = self._make_log_with_senders(["alice", "bob", "carol"])
+        page = log.to_page(order="asc")
+        sender_ids = [e["sender_id"] for e in page["entries"]]
+        self.assertEqual(sender_ids, ["alice", "bob", "carol"])
+
+    def test_order_desc_newest_first(self):
+        log = self._make_log_with_senders(["alice", "bob", "carol"])
+        page = log.to_page(order="desc")
+        sender_ids = [e["sender_id"] for e in page["entries"]]
+        self.assertEqual(sender_ids, ["carol", "bob", "alice"])
+
+    def test_order_desc_case_insensitive(self):
+        log = self._make_log_with_senders(["alice", "bob"])
+        page = log.to_page(order="DESC")
+        sender_ids = [e["sender_id"] for e in page["entries"]]
+        self.assertEqual(sender_ids, ["bob", "alice"])
+
+    def test_invalid_order_defaults_to_asc(self):
+        log = self._make_log_with_senders(["alice", "bob"])
+        page = log.to_page(order="random")
+        sender_ids = [e["sender_id"] for e in page["entries"]]
+        self.assertEqual(sender_ids, ["alice", "bob"])
+
+    def test_non_string_order_defaults_to_asc(self):
+        log = self._make_log_with_senders(["alice", "bob"])
+        page = log.to_page(order=None)  # type: ignore[arg-type]
+        sender_ids = [e["sender_id"] for e in page["entries"]]
+        self.assertEqual(sender_ids, ["alice", "bob"])
+
+    def test_order_desc_echoed_in_response(self):
+        log = self._make_log_with_senders(["alice"])
+        page = log.to_page(order="desc")
+        self.assertEqual(page.get("order"), "desc")
+
+    def test_order_asc_not_echoed_in_response(self):
+        log = self._make_log_with_senders(["alice"])
+        page = log.to_page(order="asc")
+        self.assertNotIn("order", page)
+
+    def test_order_desc_with_limit_returns_top_n_newest(self):
+        log = self._make_log_with_senders(["alice", "bob", "carol"])
+        page = log.to_page(order="desc", limit=2)
+        sender_ids = [e["sender_id"] for e in page["entries"]]
+        self.assertEqual(sender_ids, ["carol", "bob"])
+        self.assertEqual(page["total"], 3)
+
+    def test_order_desc_with_sender_filter(self):
+        log = self._make_log_with_senders(["alice", "alice", "bob"])
+        page = log.to_page(order="desc", sender_id="alice")
+        self.assertEqual(page["total"], 2)
+        self.assertEqual(page["filter_sender_id"], "alice")
+
+    def test_empty_log_desc_returns_empty_entries(self):
+        log = AuditLog()
+        page = log.to_page(order="desc")
+        self.assertEqual(page["entries"], [])
+        self.assertEqual(page["total"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

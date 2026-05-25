@@ -591,6 +591,7 @@ class AuditLog:
         action: str = "",
         since: str = "",
         until: str = "",
+        order: str = "asc",
     ) -> dict:
         """Return a filtered, paginated slice of entries.
 
@@ -603,6 +604,8 @@ class AuditLog:
                    this timestamp.  Invalid strings are silently ignored.
         until:     ISO 8601 datetime string; only include entries at or before
                    this timestamp.  Invalid strings are silently ignored.
+        order:     "asc" (oldest first, default) or "desc" (newest first).
+                   Any other value is treated as "asc".
         """
         all_entries = self.snapshot()
         if sender_id:
@@ -616,6 +619,9 @@ class AuditLog:
             all_entries = [e for e in all_entries if e.timestamp >= since_dt]
         if until_dt is not None:
             all_entries = [e for e in all_entries if e.timestamp <= until_dt]
+        desc = str(order).lower() == "desc"
+        if desc:
+            all_entries = list(reversed(all_entries))
         total = len(all_entries)
         offset = max(0, offset)
         actual_limit = limit if limit > 0 else total
@@ -634,6 +640,8 @@ class AuditLog:
             result["filter_since"] = since_dt.isoformat()
         if until_dt is not None:
             result["filter_until"] = until_dt.isoformat()
+        if desc:
+            result["order"] = "desc"
         return result
 
     def to_json(self) -> str:
