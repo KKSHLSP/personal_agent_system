@@ -172,6 +172,73 @@ class PermissionStore:
             auto_reply_enabled=False,
         )
 
+    @classmethod
+    def from_file(cls, path: str) -> "PermissionStore":
+        """Load permission profiles from a JSON file.
+
+        Expected format::
+
+            {
+              "profiles": {
+                "contact_id": {
+                  "allowed_knowledge_tags": ["public", "course"],
+                  "auto_reply_enabled": true,
+                  "sensitive_operation_confirmation": true
+                }
+              },
+              "default": {
+                "allowed_knowledge_tags": ["public"],
+                "auto_reply_enabled": false
+              }
+            }
+
+        The ``"default"`` entry is optional; if absent the built-in default
+        (public-only, no auto-reply) is used.  A missing or unreadable file
+        returns an empty store with built-in defaults without raising.
+        Malformed profile entries are skipped.
+        """
+        try:
+            with open(path, encoding="utf-8") as fp:
+                raw = json.load(fp)
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return cls({})
+        if not isinstance(raw, dict):
+            return cls({})
+
+        profiles: dict[str, PermissionProfile] = {}
+        raw_profiles = raw.get("profiles", {})
+        if isinstance(raw_profiles, dict):
+            for contact_id, entry in raw_profiles.items():
+                profile = cls._parse_profile(str(contact_id), entry)
+                if profile is not None:
+                    profiles[contact_id] = profile
+
+        default_profile: PermissionProfile | None = None
+        raw_default = raw.get("default")
+        if isinstance(raw_default, dict):
+            default_profile = cls._parse_profile("default", raw_default)
+
+        return cls(profiles, default_profile)
+
+    @staticmethod
+    def _parse_profile(contact_id: str, entry: object) -> "PermissionProfile | None":
+        if not isinstance(entry, dict):
+            return None
+        try:
+            tags = entry.get("allowed_knowledge_tags") or []
+            if not isinstance(tags, (list, tuple, set)):
+                return None
+            return PermissionProfile(
+                contact_id=contact_id,
+                allowed_knowledge_tags=set(str(t) for t in tags),
+                auto_reply_enabled=bool(entry.get("auto_reply_enabled", False)),
+                sensitive_operation_confirmation=bool(
+                    entry.get("sensitive_operation_confirmation", True)
+                ),
+            )
+        except (TypeError, ValueError):
+            return None
+
     def get_profile(self, contact_id: str) -> PermissionProfile:
         return self._profiles.get(contact_id, self._default_profile)
 
@@ -648,16 +715,20 @@ def build_demo_system(config: AgentConfig | None = None) -> PersonalAgentSystem:
             IncomingMessage("unknown", "conv_c", "你的密码是多少？", now, "mock"),
         ]
     )
-    permissions = PermissionStore(
-        profiles={
-            "classmate_a": PermissionProfile(
-                "classmate_a", {"public", "course"}, auto_reply_enabled=True
-            ),
-            "classmate_b": PermissionProfile(
-                "classmate_b", {"public", "course"}, auto_reply_enabled=False
-            ),
-        }
-    )
+    if config.permissions.permissions_file:
+        permissions = PermissionStore.from_file(config.permissions.permissions_file)
+    else:
+        permissions = PermissionStore(
+            profiles={
+                "classmate_a": PermissionProfile(
+                    "classmate_a", {"public", "course"}, auto_reply_enabled=True
+                ),
+                "classmate_b": PermissionProfile(
+                    "classmate_b", {"public", "course"}, auto_reply_enabled=False
+                ),
+            }
+        )
+
     if config.knowledge.knowledge_file:
         knowledge = KnowledgeBase.from_file(config.knowledge.knowledge_file)
     else:

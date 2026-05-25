@@ -11,6 +11,7 @@ from config import (
     AuditConfig,
     ConfidenceConfig,
     KnowledgeConfig,
+    PermissionsConfig,
     RateLimitConfig,
     SafetyConfig,
     WebUIConfig,
@@ -512,6 +513,44 @@ class RateLimitConfigWiringTest(unittest.TestCase):
 
         self.assertEqual(result.decision.action, ReplyAction.REJECT)
         self.assertIn("rate_limited", result.draft.safety_flags)
+
+
+class PermissionsConfigTest(unittest.TestCase):
+    def test_default_permissions_file_is_empty(self):
+        config = AgentConfig()
+        self.assertEqual(config.permissions.permissions_file, "")
+
+    def test_permissions_config_is_present_in_agent_config(self):
+        config = AgentConfig()
+        self.assertIsInstance(config.permissions, PermissionsConfig)
+
+    def test_permissions_file_loaded_from_json_file(self):
+        fp = tempfile.NamedTemporaryFile(
+            suffix=".json", delete=False, mode="w", encoding="utf-8"
+        )
+        json.dump({"rate_limit": {"max_messages": 5}, "permissions": {"permissions_file": "/tmp/p.json"}}, fp)
+        fp.close()
+        try:
+            config = load_config(fp.name)
+            self.assertEqual(config.permissions.permissions_file, "/tmp/p.json")
+        finally:
+            os.unlink(fp.name)
+
+    def test_permissions_file_env_var_overrides(self):
+        os.environ["AGENT_PERMISSIONS_FILE"] = "/env/permissions.json"
+        try:
+            config = load_config()
+            self.assertEqual(config.permissions.permissions_file, "/env/permissions.json")
+        finally:
+            del os.environ["AGENT_PERMISSIONS_FILE"]
+
+    def test_env_var_permissions_file_empty_string_is_valid(self):
+        os.environ["AGENT_PERMISSIONS_FILE"] = ""
+        try:
+            config = load_config()
+            self.assertEqual(config.permissions.permissions_file, "")
+        finally:
+            del os.environ["AGENT_PERMISSIONS_FILE"]
 
 
 if __name__ == "__main__":

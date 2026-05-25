@@ -651,5 +651,158 @@ class KnowledgeBaseFromFileTest(unittest.TestCase):
         self.assertIn("xyz", result.draft.text + " ".join(result.draft.evidence))
 
 
+class PermissionStoreFromFileTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp_files: list[str] = []
+
+    def tearDown(self):
+        for f in self._tmp_files:
+            try:
+                os.unlink(f)
+            except FileNotFoundError:
+                pass
+
+    def _write_json(self, data) -> str:
+        fp = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w", encoding="utf-8")
+        json.dump(data, fp, ensure_ascii=False)
+        fp.close()
+        self._tmp_files.append(fp.name)
+        return fp.name
+
+    def test_loads_profile_with_auto_reply(self):
+        path = self._write_json({
+            "profiles": {
+                "alice": {
+                    "allowed_knowledge_tags": ["public", "course"],
+                    "auto_reply_enabled": True,
+                    "sensitive_operation_confirmation": False,
+                }
+            }
+        })
+        store = PermissionStore.from_file(path)
+        profile = store.get_profile("alice")
+        self.assertEqual(profile.contact_id, "alice")
+        self.assertIn("course", profile.allowed_knowledge_tags)
+        self.assertTrue(profile.auto_reply_enabled)
+        self.assertFalse(profile.sensitive_operation_confirmation)
+
+    def test_loads_multiple_profiles(self):
+        path = self._write_json({
+            "profiles": {
+                "bob": {"allowed_knowledge_tags": ["public"], "auto_reply_enabled": False},
+                "carol": {"allowed_knowledge_tags": ["public", "vip"], "auto_reply_enabled": True},
+            }
+        })
+        store = PermissionStore.from_file(path)
+        self.assertFalse(store.get_profile("bob").auto_reply_enabled)
+        self.assertTrue(store.get_profile("carol").auto_reply_enabled)
+        self.assertIn("vip", store.get_profile("carol").allowed_knowledge_tags)
+
+    def test_missing_file_returns_store_with_builtin_defaults(self):
+        store = PermissionStore.from_file("/tmp/__nonexistent_permissions__.json")
+        profile = store.get_profile("anyone")
+        self.assertFalse(profile.auto_reply_enabled)
+        self.assertIn("public", profile.allowed_knowledge_tags)
+
+    def test_malformed_json_returns_store_with_builtin_defaults(self):
+        fp = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w", encoding="utf-8")
+        fp.write("not valid json {{{")
+        fp.close()
+        self._tmp_files.append(fp.name)
+        store = PermissionStore.from_file(fp.name)
+        profile = store.get_profile("anyone")
+        self.assertFalse(profile.auto_reply_enabled)
+
+    def test_custom_default_profile_from_file(self):
+        path = self._write_json({
+            "profiles": {},
+            "default": {
+                "allowed_knowledge_tags": ["public", "restricted"],
+                "auto_reply_enabled": True,
+            }
+        })
+        store = PermissionStore.from_file(path)
+        profile = store.get_profile("unknown_contact")
+        self.assertTrue(profile.auto_reply_enabled)
+        self.assertIn("restricted", profile.allowed_knowledge_tags)
+
+    def test_unknown_contact_falls_back_to_default(self):
+        path = self._write_json({
+            "profiles": {
+                "known": {"allowed_knowledge_tags": ["public"], "auto_reply_enabled": True},
+            }
+        })
+        store = PermissionStore.from_file(path)
+        profile = store.get_profile("stranger")
+        self.assertFalse(profile.auto_reply_enabled)
+        self.assertIn("public", profile.allowed_knowledge_tags)
+
+    def test_skips_malformed_profile_entries(self):
+        path = self._write_json({
+            "profiles": {
+                "valid": {"allowed_knowledge_tags": ["public"], "auto_reply_enabled": True},
+                "bad": "not a dict",
+                "also_bad": None,
+            }
+        })
+        store = PermissionStore.from_file(path)
+        self.assertTrue(store.get_profile("valid").auto_reply_enabled)
+        # malformed entries silently skipped; unknown falls back to default
+        self.assertFalse(store.get_profile("bad").auto_reply_enabled)
+
+    def test_skips_profile_when_tags_are_not_a_sequence(self):
+        path = self._write_json({
+            "profiles": {
+                "bad_tags": {"allowed_knowledge_tags": "public", "auto_reply_enabled": True},
+            }
+        })
+        store = PermissionStore.from_file(path)
+        profile = store.get_profile("bad_tags")
+        self.assertFalse(profile.auto_reply_enabled)
+        self.assertEqual(profile.allowed_knowledge_tags, {"public"})
+
+    def test_non_dict_root_returns_empty_store(self):
+        path = self._write_json(["not", "a", "dict"])
+        store = PermissionStore.from_file(path)
+        profile = store.get_profile("anyone")
+        self.assertFalse(profile.auto_reply_enabled)
+
+    def test_auto_reply_defaults_to_false_when_absent(self):
+        path = self._write_json({
+            "profiles": {
+                "dave": {"allowed_knowledge_tags": ["public"]},
+            }
+        })
+        store = PermissionStore.from_file(path)
+        self.assertFalse(store.get_profile("dave").auto_reply_enabled)
+
+    def test_sensitive_operation_confirmation_defaults_to_true(self):
+        path = self._write_json({
+            "profiles": {
+                "eve": {"allowed_knowledge_tags": ["public"], "auto_reply_enabled": True},
+            }
+        })
+        store = PermissionStore.from_file(path)
+        self.assertTrue(store.get_profile("eve").sensitive_operation_confirmation)
+
+    def test_build_demo_system_uses_permissions_file_when_configured(self):
+        from config import load_config
+        path = self._write_json({
+            "profiles": {
+                "classmate_a": {
+                    "allowed_knowledge_tags": ["public", "course"],
+                    "auto_reply_enabled": False,
+                }
+            }
+        })
+        config = load_config()
+        config.permissions.permissions_file = path
+        system = build_demo_system(config)
+        # classmate_a was loaded from file with auto_reply_enabled=False
+        msg = IncomingMessage("classmate_a", "perm_test", "资料在哪里？", datetime.now(timezone.utc), "mock")
+        result = system.handle_message(msg)
+        self.assertNotEqual(result.decision.action, ReplyAction.AUTO_REPLY)
+
+
 if __name__ == "__main__":
     unittest.main()
