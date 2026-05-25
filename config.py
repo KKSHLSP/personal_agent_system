@@ -47,6 +47,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import os
+from urllib.parse import urlsplit, urlunsplit
 
 
 @dataclass
@@ -128,6 +129,54 @@ class AgentConfig:
             raise ValueError("audit.max_entries must be >= 0")
         if not 1 <= self.webui.port <= 65535:
             raise ValueError("webui.port must be in [1, 65535]")
+
+
+def config_to_dict(config: AgentConfig) -> dict:
+    """Serialize an AgentConfig to a plain JSON-safe dict."""
+    return {
+        "rate_limit": {
+            "max_messages": config.rate_limit.max_messages,
+            "window_seconds": config.rate_limit.window_seconds,
+        },
+        "confidence": {
+            "auto_reply_threshold": config.confidence.auto_reply_threshold,
+            "base_score": config.confidence.base_score,
+            "score_multiplier": config.confidence.score_multiplier,
+            "cap": config.confidence.cap,
+        },
+        "safety": {
+            "sensitive_patterns": config.safety.sensitive_patterns,
+        },
+        "knowledge": {
+            "search_limit": config.knowledge.search_limit,
+            "max_recent_messages": config.knowledge.max_recent_messages,
+            "knowledge_file": config.knowledge.knowledge_file,
+        },
+        "audit": {
+            "log_file": config.audit.log_file,
+            "max_entries": config.audit.max_entries,
+        },
+        "permissions": {
+            "permissions_file": config.permissions.permissions_file,
+        },
+        "webui": {
+            "host": config.webui.host,
+            "port": config.webui.port,
+            "local_ai_url": _redact_url_userinfo(config.webui.local_ai_url),
+        },
+    }
+
+
+def _redact_url_userinfo(value: str) -> str:
+    parts = urlsplit(value)
+    if not parts.username and not parts.password:
+        return value
+    host = parts.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if parts.port is not None:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, f"***@{host}", parts.path, parts.query, parts.fragment))
 
 
 def load_config(path: str | None = None) -> AgentConfig:

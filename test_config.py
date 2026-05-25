@@ -15,6 +15,7 @@ from config import (
     RateLimitConfig,
     SafetyConfig,
     WebUIConfig,
+    config_to_dict,
     load_config,
 )
 from agent import (
@@ -470,6 +471,24 @@ class AuditConfigTest(unittest.TestCase):
         c2 = load_config()
         c1.audit.log_file = "/tmp/mutated.jsonl"
         self.assertEqual(c2.audit.log_file, "")
+
+    def test_config_to_dict_redacts_local_ai_url_userinfo(self):
+        config = AgentConfig()
+        config.webui.local_ai_url = "http://user:secret@127.0.0.1:11434/v1?x=1"
+        data = config_to_dict(config)
+        self.assertEqual(data["webui"]["local_ai_url"], "http://***@127.0.0.1:11434/v1?x=1")
+        self.assertNotIn("secret", data["webui"]["local_ai_url"])
+
+    def test_config_to_dict_preserves_url_without_userinfo(self):
+        config = AgentConfig()
+        config.webui.local_ai_url = "http://127.0.0.1:11434/v1"
+        data = config_to_dict(config)
+        self.assertEqual(data["webui"]["local_ai_url"], "http://127.0.0.1:11434/v1")
+
+    def test_config_to_dict_includes_sections(self):
+        data = config_to_dict(AgentConfig())
+        for section in ("rate_limit", "confidence", "safety", "knowledge", "audit", "permissions", "webui"):
+            self.assertIn(section, data)
 
     def test_audit_default_max_entries_is_zero(self):
         config = load_config()

@@ -739,6 +739,7 @@ class PersonalAgentSystem:
         audit_log: AuditLog,
         rate_limiter: RateLimiter | None = None,
         knowledge_search_limit: int = 3,
+        config: "AgentConfig | None" = None,
     ) -> None:
         self.adapter = adapter
         self.permission_store = permission_store
@@ -750,6 +751,7 @@ class PersonalAgentSystem:
         self.audit_log = audit_log
         self._rate_limiter = rate_limiter
         self._knowledge_search_limit = knowledge_search_limit
+        self.config = config
 
     @property
     def rate_limiter(self) -> "RateLimiter | None":
@@ -891,6 +893,7 @@ def build_demo_system(config: AgentConfig | None = None) -> PersonalAgentSystem:
         audit_log=AuditLog(log_file=config.audit.log_file, max_entries=config.audit.max_entries),
         rate_limiter=RateLimiter(config.rate_limit.max_messages, config.rate_limit.window_seconds),
         knowledge_search_limit=config.knowledge.search_limit,
+        config=config,
     )
 
 

@@ -20,6 +20,7 @@ import urllib.request
 import urllib.error
 
 from agent import AgentResult, IncomingMessage, build_demo_system
+from config import config_to_dict
 
 MAX_BODY_BYTES = 65_536
 MAX_CONTENT_LEN = 4_096
@@ -435,6 +436,10 @@ class WebAgentHandler(BaseHTTPRequestHandler):
                 result = list_local_ai_models(base_url, api_key)
                 status = HTTPStatus.OK if result["ok"] else HTTPStatus.BAD_GATEWAY
                 self._send_json(status, result)
+                return
+            if self.path == "/api/config":
+                cfg = self.system.config
+                self._send_json(HTTPStatus.OK, config_to_dict(cfg) if cfg is not None else {})
                 return
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
         except Exception:

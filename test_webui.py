@@ -1257,5 +1257,58 @@ class WebAgentAuditTimestampFilterTest(unittest.TestCase):
         self.assertIn("filter_until", data)
 
 
+class WebAgentConfigEndpointTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        WebAgentHandler.system = build_demo_system()
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), WebAgentHandler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _url(self, path: str) -> str:
+        return f"http://{self.host}:{self.port}{path}"
+
+    def _get_config(self):
+        with urllib.request.urlopen(self._url("/api/config")) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def test_config_endpoint_returns_200_with_all_sections(self):
+        status, data = self._get_config()
+        self.assertEqual(status, 200)
+        for section in ("rate_limit", "confidence", "safety", "knowledge", "audit", "permissions", "webui"):
+            self.assertIn(section, data)
+
+    def test_config_endpoint_rate_limit_defaults(self):
+        _, data = self._get_config()
+        rl = data["rate_limit"]
+        self.assertIn("max_messages", rl)
+        self.assertIn("window_seconds", rl)
+        self.assertIsInstance(rl["max_messages"], int)
+        self.assertIsInstance(rl["window_seconds"], float)
+
+    def test_config_endpoint_confidence_values_in_range(self):
+        _, data = self._get_config()
+        conf = data["confidence"]
+        for key in ("auto_reply_threshold", "base_score", "score_multiplier", "cap"):
+            self.assertIn(key, conf)
+            self.assertGreaterEqual(conf[key], 0.0)
+
+    def test_config_endpoint_has_no_store_cache_control(self):
+        with urllib.request.urlopen(self._url("/api/config")) as resp:
+            self.assertEqual(resp.headers.get("Cache-Control"), "no-store")
+
+    def test_config_endpoint_has_x_request_id(self):
+        with urllib.request.urlopen(self._url("/api/config")) as resp:
+            self.assertIsNotNone(resp.headers.get("X-Request-ID"))
+            self.assertEqual(len(resp.headers.get("X-Request-ID")), 32)
+
+
 if __name__ == "__main__":
     unittest.main()
