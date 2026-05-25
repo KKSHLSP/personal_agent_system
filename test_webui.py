@@ -1310,5 +1310,72 @@ class WebAgentConfigEndpointTest(unittest.TestCase):
             self.assertEqual(len(resp.headers.get("X-Request-ID")), 32)
 
 
+class WebAgentCspHeaderTest(unittest.TestCase):
+    """Content-Security-Policy header is present on every response."""
+
+    @classmethod
+    def setUpClass(cls):
+        system = build_demo_system()
+        handler = type("_CSPHandler", (WebAgentHandler,), {"system": system})
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _url(self, path: str) -> str:
+        return f"http://{self.host}:{self.port}{path}"
+
+    def _get_csp(self, path: str) -> str:
+        try:
+            with urllib.request.urlopen(self._url(path)) as resp:
+                return resp.headers.get("content-security-policy", "")
+        except urllib.error.HTTPError as err:
+            with err:
+                return err.headers.get("content-security-policy", "")
+
+    def _post_csp(self, path: str, payload: dict) -> str:
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            self._url(path), data=body, method="POST",
+            headers={"content-type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.headers.get("content-security-policy", "")
+        except urllib.error.HTTPError as err:
+            with err:
+                return err.headers.get("content-security-policy", "")
+
+    def test_html_response_has_csp(self):
+        csp = self._get_csp("/")
+        self.assertIn("default-src", csp)
+
+    def test_json_api_response_has_csp(self):
+        csp = self._get_csp("/api/health")
+        self.assertIn("default-src", csp)
+
+    def test_404_response_has_csp(self):
+        csp = self._get_csp("/no/such/path")
+        self.assertIn("default-src", csp)
+
+    def test_post_200_response_has_csp(self):
+        csp = self._post_csp("/api/message", {"content": "hello", "sender_id": "tester"})
+        self.assertIn("default-src", csp)
+
+    def test_csp_restricts_connect_to_self(self):
+        csp = self._get_csp("/api/health")
+        self.assertIn("connect-src 'self'", csp)
+
+    def test_csp_frame_ancestors_none(self):
+        csp = self._get_csp("/")
+        self.assertIn("frame-ancestors 'none'", csp)
+
+
 if __name__ == "__main__":
     unittest.main()

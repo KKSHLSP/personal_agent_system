@@ -547,12 +547,21 @@ class WebAgentHandler(BaseHTTPRequestHandler):
             self.__request_id: str = uuid.uuid4().hex
             return self.__request_id
 
+    _CSP = (
+        "default-src 'self'; "
+        "style-src 'unsafe-inline'; "
+        "script-src 'unsafe-inline'; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'"
+    )
+
     def _send_text(self, status: HTTPStatus, text: str, content_type: str, extra_headers: dict[str, str] | None = None) -> None:
         body = text.encode("utf-8")
         self.send_response(status.value)
         self.send_header("content-type", content_type)
         self.send_header("content-length", str(len(body)))
         self.send_header("cache-control", "no-store")
+        self.send_header("content-security-policy", self._CSP)
         self.send_header("x-content-type-options", "nosniff")
         self.send_header("x-frame-options", "DENY")
         self.send_header("x-request-id", self._request_id)
