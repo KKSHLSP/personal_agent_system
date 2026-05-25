@@ -757,5 +757,67 @@ class ConfigValidationTest(unittest.TestCase):
         c.validate()
 
 
+class ConfigToDictRedactionTest(unittest.TestCase):
+    """config_to_dict must not leak internal paths or detection-rule content."""
+
+    def test_safety_pattern_count_returned_not_patterns(self):
+        data = config_to_dict(AgentConfig())
+        self.assertNotIn("sensitive_patterns", data["safety"])
+        self.assertIn("pattern_count", data["safety"])
+        self.assertIsInstance(data["safety"]["pattern_count"], int)
+        self.assertGreater(data["safety"]["pattern_count"], 0)
+
+    def test_safety_pattern_count_reflects_actual_count(self):
+        config = AgentConfig()
+        config.safety.sensitive_patterns = ["a", "b", "c"]
+        data = config_to_dict(config)
+        self.assertEqual(data["safety"]["pattern_count"], 3)
+
+    def test_audit_file_path_not_exposed(self):
+        config = AgentConfig()
+        config.audit.log_file = "/var/log/agent.jsonl"
+        data = config_to_dict(config)
+        self.assertNotIn("log_file", data["audit"])
+        self.assertNotIn("/var/log", str(data))
+
+    def test_audit_file_enabled_true_when_path_set(self):
+        config = AgentConfig()
+        config.audit.log_file = "/var/log/agent.jsonl"
+        self.assertTrue(config_to_dict(config)["audit"]["file_enabled"])
+
+    def test_audit_file_enabled_false_when_empty(self):
+        self.assertFalse(config_to_dict(AgentConfig())["audit"]["file_enabled"])
+
+    def test_knowledge_file_path_not_exposed(self):
+        config = AgentConfig()
+        config.knowledge.knowledge_file = "/data/kb.json"
+        data = config_to_dict(config)
+        self.assertNotIn("knowledge_file", data["knowledge"])
+        self.assertNotIn("/data", str(data))
+
+    def test_knowledge_file_enabled_true_when_path_set(self):
+        config = AgentConfig()
+        config.knowledge.knowledge_file = "/data/kb.json"
+        self.assertTrue(config_to_dict(config)["knowledge"]["file_enabled"])
+
+    def test_knowledge_file_enabled_false_when_empty(self):
+        self.assertFalse(config_to_dict(AgentConfig())["knowledge"]["file_enabled"])
+
+    def test_permissions_file_path_not_exposed(self):
+        config = AgentConfig()
+        config.permissions.permissions_file = "/etc/agent/perms.json"
+        data = config_to_dict(config)
+        self.assertNotIn("permissions_file", data["permissions"])
+        self.assertNotIn("/etc", str(data))
+
+    def test_permissions_file_enabled_true_when_path_set(self):
+        config = AgentConfig()
+        config.permissions.permissions_file = "/etc/agent/perms.json"
+        self.assertTrue(config_to_dict(config)["permissions"]["file_enabled"])
+
+    def test_permissions_file_enabled_false_when_empty(self):
+        self.assertFalse(config_to_dict(AgentConfig())["permissions"]["file_enabled"])
+
+
 if __name__ == "__main__":
     unittest.main()

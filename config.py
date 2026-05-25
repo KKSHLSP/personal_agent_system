@@ -132,7 +132,13 @@ class AgentConfig:
 
 
 def config_to_dict(config: AgentConfig) -> dict:
-    """Serialize an AgentConfig to a plain JSON-safe dict."""
+    """Serialize an AgentConfig to a redacted, JSON-safe dict for the /api/config endpoint.
+
+    File paths are replaced by a boolean ``file_enabled`` flag so internal
+    filesystem layout is never leaked.  ``sensitive_patterns`` is replaced by
+    ``pattern_count`` so detection rules cannot be reverse-engineered via the
+    API.
+    """
     return {
         "rate_limit": {
             "max_messages": config.rate_limit.max_messages,
@@ -145,19 +151,19 @@ def config_to_dict(config: AgentConfig) -> dict:
             "cap": config.confidence.cap,
         },
         "safety": {
-            "sensitive_patterns": config.safety.sensitive_patterns,
+            "pattern_count": len(config.safety.sensitive_patterns),
         },
         "knowledge": {
             "search_limit": config.knowledge.search_limit,
             "max_recent_messages": config.knowledge.max_recent_messages,
-            "knowledge_file": config.knowledge.knowledge_file,
+            "file_enabled": bool(config.knowledge.knowledge_file),
         },
         "audit": {
-            "log_file": config.audit.log_file,
+            "file_enabled": bool(config.audit.log_file),
             "max_entries": config.audit.max_entries,
         },
         "permissions": {
-            "permissions_file": config.permissions.permissions_file,
+            "file_enabled": bool(config.permissions.permissions_file),
         },
         "webui": {
             "host": config.webui.host,
