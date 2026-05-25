@@ -493,7 +493,10 @@ class WebAgentHandler(BaseHTTPRequestHandler):
         return
 
     def _read_json(self) -> dict[str, object]:
-        length = int(self.headers.get("content-length", "0"))
+        try:
+            length = max(0, int(self.headers.get("content-length", "0")))
+        except ValueError:
+            length = 0
         if length > MAX_BODY_BYTES:
             raise _BodyTooLargeError()
         body = self.rfile.read(length).decode("utf-8")

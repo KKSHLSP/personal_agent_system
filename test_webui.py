@@ -1,5 +1,6 @@
 from http.server import ThreadingHTTPServer
 from http.server import BaseHTTPRequestHandler
+import io
 import json
 import threading
 import unittest
@@ -12,6 +13,7 @@ from webui import (
     MAX_BODY_BYTES,
     MAX_CONTENT_LEN,
     MAX_ID_LEN,
+    _BodyTooLargeError,
     WebAgentHandler,
     call_local_ai,
     clean_model_text,
@@ -693,6 +695,50 @@ class WebAgentInternalErrorTest(unittest.TestCase):
 
         self.assertEqual(status, 500)
         self.assertIn("error", body)
+
+
+class WebAgentReadJsonTest(unittest.TestCase):
+    """Unit tests for _read_json Content-Length edge cases."""
+
+    def _make_handler(self, content_length_value: str, body_bytes: bytes = b""):
+        class _FakeHandler(WebAgentHandler):
+            def __init__(self, cl, body):
+                self.headers = {"content-length": cl}
+                self.rfile = io.BytesIO(body)
+        return _FakeHandler(content_length_value, body_bytes)
+
+    def test_negative_content_length_reads_nothing(self):
+        # rfile.read(-1) would drain the socket; clamped to 0 → empty dict
+        handler = self._make_handler("-1", b'{"key": "value"}')
+        result = handler._read_json()
+        self.assertEqual(result, {})
+
+    def test_large_negative_content_length_reads_nothing(self):
+        handler = self._make_handler("-9999", b'{"key": "value"}')
+        result = handler._read_json()
+        self.assertEqual(result, {})
+
+    def test_non_numeric_content_length_returns_empty_dict(self):
+        # ValueError from int() should not bubble up as 500
+        handler = self._make_handler("abc", b'{"key": "value"}')
+        result = handler._read_json()
+        self.assertEqual(result, {})
+
+    def test_zero_content_length_returns_empty_dict(self):
+        handler = self._make_handler("0", b"")
+        result = handler._read_json()
+        self.assertEqual(result, {})
+
+    def test_valid_content_length_reads_body(self):
+        body = b'{"sender_id": "test"}'
+        handler = self._make_handler(str(len(body)), body)
+        result = handler._read_json()
+        self.assertEqual(result["sender_id"], "test")
+
+    def test_oversized_content_length_raises_body_too_large(self):
+        handler = self._make_handler(str(MAX_BODY_BYTES + 1), b"")
+        with self.assertRaises(_BodyTooLargeError):
+            handler._read_json()
 
 
 if __name__ == "__main__":
