@@ -45,6 +45,22 @@ class WebAgentHandlerTest(unittest.TestCase):
         self.assertTrue(data["draft"]["evidence"])
         self.assertTrue(data["should_send"])
 
+    def test_audit_endpoint_returns_recorded_decisions(self):
+        self._post_json(
+            "/api/message",
+            {
+                "sender_id": "classmate_a",
+                "conversation_id": "web-test-audit",
+                "content": "资料在哪里？",
+            },
+        )
+
+        with urllib.request.urlopen(self._url("/api/audit")) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertTrue(any(entry["conversation_id"] == "web-test-audit" for entry in data))
+
     def test_message_endpoint_rejects_sensitive_content(self):
         payload = {
             "sender_id": "unknown",
@@ -93,6 +109,28 @@ class WebAgentHandlerTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["models"], ["mock-model"])
+
+    def test_stats_endpoint_returns_summary_after_messages(self):
+        self._post_json(
+            "/api/message",
+            {"sender_id": "classmate_a", "conversation_id": "stats-conv", "content": "资料在哪里？"},
+        )
+        self._post_json(
+            "/api/message",
+            {"sender_id": "unknown", "conversation_id": "stats-conv-2", "content": "你的密码是多少？"},
+        )
+
+        with urllib.request.urlopen(self._url("/api/stats")) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertIn("total", data)
+        self.assertIn("by_action", data)
+        self.assertIn("auto_sent_count", data)
+        self.assertIn("flagged_count", data)
+        self.assertIn("mean_confidence", data)
+        self.assertGreaterEqual(data["total"], 2)
+        self.assertGreaterEqual(data["flagged_count"], 1)
 
     def test_clean_model_text_preserves_normal_text(self):
         self.assertEqual(clean_model_text("正常回答。"), "正常回答。")

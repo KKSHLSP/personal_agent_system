@@ -1,8 +1,11 @@
 from datetime import datetime, timezone
+import threading
 import unittest
 
 from agent import (
     AuditLog,
+    AuditStats,
+    ConversationContext,
     IncomingMessage,
     KnowledgeBase,
     KnowledgeItem,
@@ -16,6 +19,7 @@ from agent import (
     ReplyGenerator,
     SafetyPrivacyGuard,
     StyleProfile,
+    _tokenize,
 )
 
 
@@ -139,6 +143,115 @@ class PersonalAgentSystemTest(unittest.TestCase):
 
         self.assertIn("你看一下", result.draft.text)
         self.assertIn("口语", result.draft.style_notes)
+
+    def test_chinese_bigram_tokenization_improves_fuzzy_retrieval(self):
+        system = make_system(auto_reply_enabled=True)
+
+        result = system.handle_message(message("课程材料位置在哪？"))
+
+        self.assertEqual(result.decision.action, ReplyAction.AUTO_REPLY)
+        self.assertIn("共享盘", result.draft.text)
+        self.assertIn("课程", _tokenize("课程材料位置在哪？"))
+
+    def test_audit_log_snapshot_is_isolated_copy(self):
+        system = make_system(auto_reply_enabled=True)
+
+        system.handle_message(message("资料在哪里？"))
+        snapshot = system.audit_log.snapshot()
+        snapshot.clear()
+
+        self.assertEqual(len(system.audit_log.snapshot()), 1)
+
+
+class AuditLogStatsTest(unittest.TestCase):
+    def test_stats_empty_log_returns_zeros(self):
+        log = AuditLog()
+        s = log.stats()
+
+        self.assertEqual(s.total, 0)
+        self.assertEqual(s.by_action, {})
+        self.assertEqual(s.auto_sent_count, 0)
+        self.assertEqual(s.flagged_count, 0)
+        self.assertEqual(s.mean_confidence, 0.0)
+
+    def test_stats_counts_actions_and_flags(self):
+        system_auto = make_system(auto_reply_enabled=True)
+        system_auto.handle_message(message("资料在哪里？"))        # AUTO_REPLY, no flags
+        system_auto.handle_message(message("你的密码是多少？"))     # REJECT, flagged
+        system_auto.handle_message(message("明天早餐吃什么？"))     # ASK_USER, no flags
+
+        s = system_auto.audit_log.stats()
+
+        self.assertEqual(s.total, 3)
+        self.assertEqual(s.by_action["AUTO_REPLY"], 1)
+        self.assertEqual(s.by_action["REJECT"], 1)
+        self.assertEqual(s.by_action["ASK_USER"], 1)
+        self.assertEqual(s.auto_sent_count, 1)
+        self.assertEqual(s.flagged_count, 1)
+        self.assertGreater(s.mean_confidence, 0.0)
+
+    def test_stats_mean_confidence_is_average(self):
+        system = make_system(auto_reply_enabled=True)
+        system.handle_message(message("资料在哪里？"))
+        system.handle_message(message("资料在哪里？"))
+
+        s = system.audit_log.stats()
+        expected = sum(e.confidence for e in system.audit_log.snapshot()) / 2
+        self.assertAlmostEqual(s.mean_confidence, round(expected, 4), places=4)
+
+
+class MessageRouterThreadSafetyTest(unittest.TestCase):
+    def test_concurrent_contexts_are_not_corrupted(self):
+        router = MessageRouter()
+        default_perm = PermissionProfile("default", {"public"}, auto_reply_enabled=False)
+        errors: list[Exception] = []
+        results: list[ConversationContext] = []
+        lock = threading.Lock()
+
+        def create_context(conv_id: str) -> None:
+            try:
+                msg = IncomingMessage("user", conv_id, "hi", datetime.now(timezone.utc), "mock")
+                ctx = router.get_context(msg, default_perm)
+                with lock:
+                    results.append(ctx)
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=create_context, args=(f"conv-{i}",)) for i in range(40)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [], f"Thread errors: {errors}")
+        self.assertEqual(len(results), 40)
+
+    def test_same_conversation_recent_messages_length_bounded(self):
+        router = MessageRouter()
+        perm = PermissionProfile("user", {"public"}, auto_reply_enabled=False)
+        barrier = threading.Barrier(20)
+        errors: list[Exception] = []
+
+        def send_message(i: int) -> None:
+            try:
+                barrier.wait()
+                msg = IncomingMessage("user", "shared-conv", f"msg-{i}", datetime.now(timezone.utc), "mock")
+                router.get_context(msg, perm)
+            except Exception as exc:
+                with threading.Lock():
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=send_message, args=(i,)) for i in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [])
+        final_msg = IncomingMessage("user", "shared-conv", "final", datetime.now(timezone.utc), "mock")
+        ctx = router.get_context(final_msg, perm)
+        self.assertLessEqual(len(ctx.recent_messages), 10)
 
 
 if __name__ == "__main__":

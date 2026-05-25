@@ -53,7 +53,27 @@ HTML = """<!doctype html>
     ul { margin: 4px 0 0; padding-left: 18px; }
     pre { margin: 0; padding: 12px; overflow: auto; background: #101820; color: #e7edf5; border-radius: 8px; font-size: 13px; }
     .stack { display: grid; gap: 18px; }
-    @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+    .audit-list {
+      display: grid;
+      gap: 8px;
+      max-height: 240px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+    .audit-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fbfcfe;
+    }
+    .audit-meta {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 4px;
+    }
+    @media (max-width: 820px) {
+      main { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -110,6 +130,9 @@ HTML = """<!doctype html>
       <pre id="raw">{}</pre>
       <h2>Local AI</h2>
       <pre id="ai-raw">{}</pre>
+      <h2>审计记录</h2>
+      <button id="refresh-audit" type="button">刷新审计记录</button>
+      <div id="audit-list" class="audit-list">暂无记录。</div>
     </section>
   </main>
   <script>
@@ -123,6 +146,8 @@ HTML = """<!doctype html>
     const raw = document.querySelector("#raw");
     const aiForm = document.querySelector("#ai-form");
     const aiRaw = document.querySelector("#ai-raw");
+    const auditButton = document.querySelector("#refresh-audit");
+    const auditList = document.querySelector("#audit-list");
 
     function fillList(node, values) {
       node.innerHTML = "";
@@ -156,6 +181,7 @@ HTML = """<!doctype html>
         fillList(evidence, data.draft.evidence);
         fillList(flags, data.draft.safety_flags);
         raw.textContent = JSON.stringify(data, null, 2);
+        loadAudit();
       } catch (error) {
         action.className = "badge REJECT";
         action.textContent = "ERROR";
@@ -180,6 +206,36 @@ HTML = """<!doctype html>
         button.disabled = false;
       }
     });
+
+    async function loadAudit() {
+      try {
+        const response = await fetch("/api/audit");
+        const data = await response.json();
+        if (!data.length) {
+          auditList.textContent = "暂无记录。";
+          return;
+        }
+        auditList.innerHTML = "";
+        for (const entry of data.slice().reverse()) {
+          const item = document.createElement("div");
+          item.className = "audit-item";
+          const title = document.createElement("strong");
+          title.textContent = `${entry.action} · ${entry.sender_id}`;
+          const meta = document.createElement("div");
+          meta.className = "audit-meta";
+          meta.textContent = `${entry.conversation_id} · ${new Date(entry.timestamp).toLocaleString()} · confidence ${Number(entry.confidence).toFixed(2)}`;
+          const reasonText = document.createElement("div");
+          reasonText.textContent = entry.reason;
+          item.append(title, meta, reasonText);
+          auditList.appendChild(item);
+        }
+      } catch (error) {
+        auditList.textContent = String(error);
+      }
+    }
+
+    auditButton.addEventListener("click", loadAudit);
+    loadAudit();
   </script>
 </body>
 </html>
@@ -294,6 +350,16 @@ class WebAgentHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/audit":
             self._send_text(HTTPStatus.OK, self.system.audit_log.to_json(), "application/json; charset=utf-8")
+            return
+        if self.path == "/api/stats":
+            s = self.system.audit_log.stats()
+            self._send_json(HTTPStatus.OK, {
+                "total": s.total,
+                "by_action": s.by_action,
+                "auto_sent_count": s.auto_sent_count,
+                "flagged_count": s.flagged_count,
+                "mean_confidence": s.mean_confidence,
+            })
             return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/local-ai-models":

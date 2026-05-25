@@ -17,6 +17,7 @@ from enum import Enum
 from typing import Iterable, Protocol
 import json
 import re
+import threading
 
 
 class ReplyAction(str, Enum):
@@ -133,22 +134,24 @@ class MockChatAdapter:
 class MessageRouter:
     def __init__(self) -> None:
         self._contexts: dict[str, ConversationContext] = {}
+        self._lock = threading.Lock()
 
     def get_context(
         self, message: IncomingMessage, permission: PermissionProfile
     ) -> ConversationContext:
-        context = self._contexts.get(message.conversation_id)
-        if context is None:
-            context = ConversationContext(
-                conversation_id=message.conversation_id,
-                contact_id=message.sender_id,
-                visible_knowledge_tags=set(permission.allowed_knowledge_tags),
-            )
-            self._contexts[message.conversation_id] = context
+        with self._lock:
+            context = self._contexts.get(message.conversation_id)
+            if context is None:
+                context = ConversationContext(
+                    conversation_id=message.conversation_id,
+                    contact_id=message.sender_id,
+                    visible_knowledge_tags=set(permission.allowed_knowledge_tags),
+                )
+                self._contexts[message.conversation_id] = context
 
-        context.recent_messages.append(message)
-        context.recent_messages = context.recent_messages[-10:]
-        return context
+            context.recent_messages.append(message)
+            context.recent_messages = context.recent_messages[-10:]
+            return context
 
 
 class PermissionStore:
@@ -311,23 +314,61 @@ class SafetyPrivacyGuard:
         return flags
 
 
+@dataclass
+class AuditStats:
+    total: int
+    by_action: dict[str, int]
+    auto_sent_count: int
+    flagged_count: int
+    mean_confidence: float
+
+
 class AuditLog:
     def __init__(self) -> None:
         self.entries: list[AuditEntry] = []
+        self._lock = threading.Lock()
 
     def record(self, result: AgentResult) -> None:
-        self.entries.append(
-            AuditEntry(
-                timestamp=datetime.now(timezone.utc),
-                conversation_id=result.message.conversation_id,
-                sender_id=result.message.sender_id,
-                action=result.decision.action,
-                reason=result.decision.reason,
-                confidence=result.decision.confidence,
-                evidence=result.draft.evidence,
-                safety_flags=result.draft.safety_flags,
-                auto_sent=result.should_send,
-            )
+        entry = AuditEntry(
+            timestamp=datetime.now(timezone.utc),
+            conversation_id=result.message.conversation_id,
+            sender_id=result.message.sender_id,
+            action=result.decision.action,
+            reason=result.decision.reason,
+            confidence=result.decision.confidence,
+            evidence=result.draft.evidence,
+            safety_flags=result.draft.safety_flags,
+            auto_sent=result.should_send,
+        )
+        with self._lock:
+            self.entries.append(entry)
+
+    def snapshot(self) -> list[AuditEntry]:
+        with self._lock:
+            return list(self.entries)
+
+    def stats(self) -> AuditStats:
+        entries = self.snapshot()
+        if not entries:
+            return AuditStats(total=0, by_action={}, auto_sent_count=0, flagged_count=0, mean_confidence=0.0)
+        by_action: dict[str, int] = {}
+        auto_sent = 0
+        flagged = 0
+        total_conf = 0.0
+        for entry in entries:
+            key = entry.action.value
+            by_action[key] = by_action.get(key, 0) + 1
+            if entry.auto_sent:
+                auto_sent += 1
+            if entry.safety_flags:
+                flagged += 1
+            total_conf += entry.confidence
+        return AuditStats(
+            total=len(entries),
+            by_action=by_action,
+            auto_sent_count=auto_sent,
+            flagged_count=flagged,
+            mean_confidence=round(total_conf / len(entries), 4),
         )
 
     def to_json(self) -> str:
@@ -337,9 +378,35 @@ class AuditLog:
                 "timestamp": entry.timestamp.isoformat(),
                 "action": entry.action.value,
             }
-            for entry in self.entries
+            for entry in self.snapshot()
         ]
         return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _tokenize(text: str) -> set[str]:
+    lowered = text.lower()
+    terms = set(re.findall(r"[a-z0-9_]+", lowered))
+
+    for chunk in re.findall(r"[\u4e00-\u9fff]+", lowered):
+        terms.add(chunk)
+        terms.update(chunk[index : index + 2] for index in range(max(0, len(chunk) - 1)))
+        terms.update(chunk[index : index + 3] for index in range(max(0, len(chunk) - 2)))
+
+    known_terms = {
+        "资料",
+        "哪里",
+        "什么时候",
+        "提交",
+        "作业",
+        "会议",
+        "几点",
+        "密码",
+        "共享盘",
+        "文件",
+        "截止",
+    }
+    terms.update(term for term in known_terms if term in lowered)
+    return terms
 
 
 class PersonalAgentSystem:
@@ -461,29 +528,6 @@ def build_demo_system() -> PersonalAgentSystem:
         guard=SafetyPrivacyGuard(),
         audit_log=AuditLog(),
     )
-
-
-def _tokenize(text: str) -> set[str]:
-    lowered = text.lower()
-    latin_terms = set(re.findall(r"[a-z0-9_]+", lowered))
-    chinese_terms = {
-        term
-        for term in (
-            "资料",
-            "哪里",
-            "什么时候",
-            "提交",
-            "作业",
-            "会议",
-            "几点",
-            "密码",
-            "共享盘",
-            "文件",
-            "截止",
-        )
-        if term in lowered
-    }
-    return latin_terms | chinese_terms
 
 
 def main() -> None:
