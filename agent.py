@@ -476,10 +476,11 @@ def _parse_iso_dt(value: str) -> "datetime | None":
 
 
 class AuditLog:
-    def __init__(self, log_file: str = "") -> None:
+    def __init__(self, log_file: str = "", max_entries: int = 0) -> None:
         self.entries: list[AuditEntry] = []
         self._lock = threading.Lock()
         self._log_file = log_file
+        self._max_entries = max(0, max_entries)
         if log_file:
             self._load_existing()
 
@@ -498,6 +499,7 @@ class AuditLog:
         )
         with self._lock:
             self.entries.append(entry)
+            self._trim_entries()
             if self._log_file:
                 self._append_to_file(entry)
 
@@ -517,6 +519,11 @@ class AuditLog:
                             pass
         except OSError:
             pass
+        self._trim_entries()
+
+    def _trim_entries(self) -> None:
+        if self._max_entries and len(self.entries) > self._max_entries:
+            self.entries = self.entries[-self._max_entries:]
 
     def _append_to_file(self, entry: AuditEntry) -> None:
         try:
@@ -881,7 +888,7 @@ def build_demo_system(config: AgentConfig | None = None) -> PersonalAgentSystem:
         ),
         generator=ReplyGenerator(style),
         guard=SafetyPrivacyGuard(sensitive_patterns=config.safety.sensitive_patterns),
-        audit_log=AuditLog(log_file=config.audit.log_file),
+        audit_log=AuditLog(log_file=config.audit.log_file, max_entries=config.audit.max_entries),
         rate_limiter=RateLimiter(config.rate_limit.max_messages, config.rate_limit.window_seconds),
         knowledge_search_limit=config.knowledge.search_limit,
     )

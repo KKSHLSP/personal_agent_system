@@ -425,11 +425,14 @@ class KnowledgeSearchLimitTest(unittest.TestCase):
 
 
 class AuditConfigTest(unittest.TestCase):
+    _ENV_KEYS = ["AGENT_AUDIT_LOG_FILE", "AGENT_AUDIT_MAX_ENTRIES"]
+
     def setUp(self):
-        self._saved = {k: os.environ.pop(k) for k in ["AGENT_AUDIT_LOG_FILE"] if k in os.environ}
+        self._saved = {k: os.environ.pop(k) for k in self._ENV_KEYS if k in os.environ}
 
     def tearDown(self):
-        os.environ.pop("AGENT_AUDIT_LOG_FILE", None)
+        for k in self._ENV_KEYS:
+            os.environ.pop(k, None)
         os.environ.update(self._saved)
 
     def test_audit_default_log_file_is_empty(self):
@@ -467,6 +470,36 @@ class AuditConfigTest(unittest.TestCase):
         c2 = load_config()
         c1.audit.log_file = "/tmp/mutated.jsonl"
         self.assertEqual(c2.audit.log_file, "")
+
+    def test_audit_default_max_entries_is_zero(self):
+        config = load_config()
+        self.assertEqual(config.audit.max_entries, 0)
+
+    def test_audit_max_entries_from_json(self):
+        fp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump({"audit": {"max_entries": 500}}, fp)
+        fp.close()
+        try:
+            config = load_config(fp.name)
+            self.assertEqual(config.audit.max_entries, 500)
+        finally:
+            os.unlink(fp.name)
+
+    def test_env_overrides_max_entries(self):
+        os.environ["AGENT_AUDIT_MAX_ENTRIES"] = "200"
+        config = load_config()
+        self.assertEqual(config.audit.max_entries, 200)
+
+    def test_env_max_entries_wins_over_json(self):
+        fp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump({"audit": {"max_entries": 100}}, fp)
+        fp.close()
+        os.environ["AGENT_AUDIT_MAX_ENTRIES"] = "999"
+        try:
+            config = load_config(fp.name)
+            self.assertEqual(config.audit.max_entries, 999)
+        finally:
+            os.unlink(fp.name)
 
     def test_build_demo_system_passes_log_file_to_audit_log(self):
         import tempfile as _tmp
@@ -685,6 +718,23 @@ class ConfigValidationTest(unittest.TestCase):
     def test_port_65535_is_valid(self):
         c = AgentConfig()
         c.webui.port = 65535
+        c.validate()
+
+    def test_audit_max_entries_negative_raises(self):
+        c = AgentConfig()
+        c.audit.max_entries = -1
+        with self.assertRaises(ValueError) as ctx:
+            c.validate()
+        self.assertIn("max_entries", str(ctx.exception))
+
+    def test_audit_max_entries_zero_is_valid(self):
+        c = AgentConfig()
+        c.audit.max_entries = 0
+        c.validate()
+
+    def test_audit_max_entries_positive_is_valid(self):
+        c = AgentConfig()
+        c.audit.max_entries = 10000
         c.validate()
 
 

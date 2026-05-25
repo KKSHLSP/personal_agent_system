@@ -7,7 +7,7 @@ JSON example (agent.json):
     {
       "rate_limit":  {"max_messages": 10, "window_seconds": 30},
       "confidence":  {"auto_reply_threshold": 0.8},
-      "audit":       {"log_file": "/var/log/agent_audit.jsonl"},
+      "audit":       {"log_file": "/var/log/agent_audit.jsonl", "max_entries": 10000},
       "permissions": {"permissions_file": "/etc/agent/permissions.json"},
       "webui":       {"port": 9090}
     }
@@ -18,6 +18,7 @@ YAML example (agent.yaml) — requires: pip install pyyaml:
       window_seconds: 30
     audit:
       log_file: /var/log/agent_audit.jsonl
+      max_entries: 10000
     permissions:
       permissions_file: /etc/agent/permissions.json
     webui:
@@ -34,6 +35,7 @@ Environment variable overrides (all optional):
     AGENT_KNOWLEDGE_MAX_RECENT_MESSAGES   int
     AGENT_KNOWLEDGE_FILE                  str   (empty = use built-in demo items)
     AGENT_AUDIT_LOG_FILE                  str   (empty = disabled)
+    AGENT_AUDIT_MAX_ENTRIES               int   (0 = unlimited; evicts oldest when exceeded)
     AGENT_PERMISSIONS_FILE                str   (empty = use built-in demo profiles)
     AGENT_WEBUI_HOST                      str
     AGENT_WEBUI_PORT                      int
@@ -86,6 +88,7 @@ class WebUIConfig:
 @dataclass
 class AuditConfig:
     log_file: str = ""
+    max_entries: int = 0
 
 
 @dataclass
@@ -121,6 +124,8 @@ class AgentConfig:
             raise ValueError("knowledge.search_limit must be >= 1")
         if self.knowledge.max_recent_messages < 1:
             raise ValueError("knowledge.max_recent_messages must be >= 1")
+        if self.audit.max_entries < 0:
+            raise ValueError("audit.max_entries must be >= 0")
         if not 1 <= self.webui.port <= 65535:
             raise ValueError("webui.port must be in [1, 65535]")
 
@@ -193,6 +198,7 @@ def _apply_env(config: AgentConfig) -> None:
     _env_int("AGENT_KNOWLEDGE_MAX_RECENT_MESSAGES", config.knowledge, "max_recent_messages")
     _env_str("AGENT_KNOWLEDGE_FILE", config.knowledge, "knowledge_file")
     _env_str("AGENT_AUDIT_LOG_FILE", config.audit, "log_file")
+    _env_int("AGENT_AUDIT_MAX_ENTRIES", config.audit, "max_entries")
     _env_str("AGENT_PERMISSIONS_FILE", config.permissions, "permissions_file")
     _env_str("AGENT_WEBUI_HOST", config.webui, "host")
     _env_int("AGENT_WEBUI_PORT", config.webui, "port")

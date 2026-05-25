@@ -1287,5 +1287,99 @@ class AuditEntryRequestIdTest(unittest.TestCase):
         self.assertEqual(log.entries[-1].request_id, "rl-req")
 
 
+class AuditLogMaxEntriesTest(unittest.TestCase):
+    """AuditLog in-memory cap via max_entries."""
+
+    def _record_n(self, log: AuditLog, n: int) -> None:
+        msg = IncomingMessage("s", "c", "hi", datetime.now(timezone.utc), "mock")
+        for _ in range(n):
+            result = build_demo_system().handle_message(msg)
+            log.record(result)
+
+    def test_zero_means_unlimited(self):
+        log = AuditLog(max_entries=0)
+        self._record_n(log, 5)
+        self.assertEqual(len(log.entries), 5)
+
+    def test_cap_at_exact_limit(self):
+        log = AuditLog(max_entries=3)
+        self._record_n(log, 3)
+        self.assertEqual(len(log.entries), 3)
+
+    def test_cap_evicts_oldest(self):
+        log = AuditLog(max_entries=3)
+        self._record_n(log, 5)
+        self.assertEqual(len(log.entries), 3)
+
+    def test_cap_keeps_most_recent(self):
+        """Surviving entries must be the last N added, not the first N."""
+        log = AuditLog(max_entries=2)
+        system = build_demo_system()
+        senders = ["alice", "bob", "carol", "dave"]
+        for sid in senders:
+            msg = IncomingMessage(sid, "c", "hi", datetime.now(timezone.utc), "mock")
+            log.record(system.handle_message(msg))
+        surviving_senders = [e.sender_id for e in log.entries]
+        # Only the last two senders should survive
+        self.assertEqual(surviving_senders, ["carol", "dave"])
+
+    def test_negative_clamped_to_unlimited(self):
+        log = AuditLog(max_entries=-5)
+        self._record_n(log, 4)
+        self.assertEqual(len(log.entries), 4)
+
+    def test_cap_one_keeps_only_last(self):
+        log = AuditLog(max_entries=1)
+        self._record_n(log, 3)
+        self.assertEqual(len(log.entries), 1)
+
+    def test_snapshot_respects_cap(self):
+        log = AuditLog(max_entries=2)
+        self._record_n(log, 5)
+        self.assertEqual(len(log.snapshot()), 2)
+
+    def test_stats_total_reflects_cap(self):
+        log = AuditLog(max_entries=2)
+        self._record_n(log, 5)
+        self.assertEqual(log.stats().total, 2)
+
+    def test_to_page_total_reflects_cap(self):
+        log = AuditLog(max_entries=2)
+        self._record_n(log, 5)
+        page = log.to_page()
+        self.assertEqual(page["total"], 2)
+
+    def test_thread_safety_under_cap(self):
+        log = AuditLog(max_entries=5)
+        system = build_demo_system()
+        msg = IncomingMessage("s", "c", "hi", datetime.now(timezone.utc), "mock")
+
+        def worker():
+            for _ in range(20):
+                log.record(system.handle_message(msg))
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertLessEqual(len(log.entries), 5)
+
+    def test_loading_existing_file_respects_cap(self):
+        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
+            path = f.name
+        try:
+            log = AuditLog(log_file=path)
+            system = build_demo_system()
+            for sid in ["alice", "bob", "carol", "dave"]:
+                msg = IncomingMessage(sid, "c", "hi", datetime.now(timezone.utc), "mock")
+                log.record(system.handle_message(msg))
+
+            capped = AuditLog(log_file=path, max_entries=2)
+            self.assertEqual([e.sender_id for e in capped.entries], ["carol", "dave"])
+        finally:
+            os.unlink(path)
+
+
 if __name__ == "__main__":
     unittest.main()
