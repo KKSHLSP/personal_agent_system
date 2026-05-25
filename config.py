@@ -46,8 +46,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import logging
 import os
 from urllib.parse import urlsplit, urlunsplit
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -208,8 +211,12 @@ def load_config(path: str | None = None) -> AgentConfig:
 def _load_file(path: str) -> dict:
     if not os.path.exists(path):
         return {}
-    with open(path, encoding="utf-8") as fp:
-        content = fp.read()
+    try:
+        with open(path, encoding="utf-8") as fp:
+            content = fp.read()
+    except OSError as exc:
+        logger.warning("Cannot read config file %r: %s", path, exc)
+        return {}
     if path.endswith((".yaml", ".yml")):
         try:
             import yaml  # type: ignore[import]

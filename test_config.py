@@ -2,9 +2,11 @@
 
 from datetime import datetime, timezone
 import json
+import logging
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from config import (
     AgentConfig,
@@ -817,6 +819,57 @@ class ConfigToDictRedactionTest(unittest.TestCase):
 
     def test_permissions_file_enabled_false_when_empty(self):
         self.assertFalse(config_to_dict(AgentConfig())["permissions"]["file_enabled"])
+
+
+class LoadFileOSErrorTest(unittest.TestCase):
+    """_load_file must silently fall back to defaults on OSError after exists()."""
+
+    def _write_json_file(self, data: dict) -> str:
+        fp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        )
+        json.dump(data, fp)
+        fp.close()
+        return fp.name
+
+    def test_permission_denied_returns_defaults(self):
+        path = self._write_json_file({"rate_limit": {"max_messages": 99}})
+        try:
+            with patch("builtins.open", side_effect=PermissionError("denied")):
+                config = load_config(path)
+            self.assertEqual(config.rate_limit.max_messages, 5)
+        finally:
+            os.unlink(path)
+
+    def test_oserror_returns_defaults(self):
+        path = self._write_json_file({"rate_limit": {"max_messages": 99}})
+        try:
+            with patch("builtins.open", side_effect=OSError("io error")):
+                config = load_config(path)
+            self.assertEqual(config.rate_limit.max_messages, 5)
+        finally:
+            os.unlink(path)
+
+    def test_oserror_logs_warning(self):
+        path = self._write_json_file({})
+        try:
+            with patch("builtins.open", side_effect=PermissionError("denied")):
+                with self.assertLogs("config", level=logging.WARNING) as cm:
+                    load_config(path)
+            self.assertTrue(
+                any("Cannot read config file" in line for line in cm.output),
+                cm.output,
+            )
+        finally:
+            os.unlink(path)
+
+    def test_readable_file_still_loads_normally(self):
+        path = self._write_json_file({"rate_limit": {"max_messages": 7}})
+        try:
+            config = load_config(path)
+            self.assertEqual(config.rate_limit.max_messages, 7)
+        finally:
+            os.unlink(path)
 
 
 if __name__ == "__main__":
