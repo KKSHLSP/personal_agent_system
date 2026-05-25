@@ -14,6 +14,7 @@ from webui import (
     MAX_CONTENT_LEN,
     MAX_ID_LEN,
     _BodyTooLargeError,
+    _WrongContentTypeError,
     WebAgentHandler,
     call_local_ai,
     clean_model_text,
@@ -711,7 +712,7 @@ class WebAgentReadJsonTest(unittest.TestCase):
     def _make_handler(self, content_length_value: str, body_bytes: bytes = b""):
         class _FakeHandler(WebAgentHandler):
             def __init__(self, cl, body):
-                self.headers = {"content-length": cl}
+                self.headers = {"content-length": cl, "content-type": "application/json"}
                 self.rfile = io.BytesIO(body)
         return _FakeHandler(content_length_value, body_bytes)
 
@@ -897,6 +898,99 @@ class WebAgentStatsByFlagTest(unittest.TestCase):
         )
         stats = self._get_stats()
         self.assertGreaterEqual(stats["by_flag"].get("sensitive_request", 0), 2)
+
+
+class WebAgentContentTypeTest(unittest.TestCase):
+    """415 is returned when POST endpoints receive a non-JSON Content-Type."""
+
+    @classmethod
+    def setUpClass(cls):
+        WebAgentHandler.system = build_demo_system()
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), WebAgentHandler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _url(self, path):
+        return f"http://{self.host}:{self.port}{path}"
+
+    def _post_raw(self, path, body: bytes, content_type: str):
+        req = urllib.request.Request(
+            self._url(path),
+            data=body,
+            headers={"Content-Type": content_type},
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return json.loads(resp.read().decode()), resp.status
+        except urllib.error.HTTPError as exc:
+            try:
+                return json.loads(exc.read().decode()), exc.code
+            finally:
+                exc.close()
+
+    def test_message_no_content_type_returns_415(self):
+        req = urllib.request.Request(
+            self._url("/api/message"),
+            data=b'{"sender_id":"x","conversation_id":"c","content":"hi"}',
+        )
+        # urllib adds no Content-Type when headers dict is omitted
+        req.remove_header("Content-type")
+        try:
+            with urllib.request.urlopen(req) as resp:
+                status = resp.status
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            exc.close()
+        self.assertEqual(status, 415)
+
+    def test_message_wrong_content_type_returns_415(self):
+        _, status = self._post_raw(
+            "/api/message",
+            b"sender_id=x&conversation_id=c&content=hi",
+            "application/x-www-form-urlencoded",
+        )
+        self.assertEqual(status, 415)
+
+    def test_message_wrong_content_type_error_body_is_json(self):
+        data, status = self._post_raw(
+            "/api/message",
+            b"hello",
+            "text/plain",
+        )
+        self.assertEqual(status, 415)
+        self.assertIn("error", data)
+        self.assertIn("application/json", data["error"])
+
+    def test_local_ai_test_wrong_content_type_returns_415(self):
+        _, status = self._post_raw(
+            "/api/local-ai-test",
+            b"base_url=http%3A%2F%2F127.0.0.1%3A8001&prompt=hi",
+            "application/x-www-form-urlencoded",
+        )
+        self.assertEqual(status, 415)
+
+    def test_json_content_type_with_charset_still_accepted(self):
+        data, status = self._post_raw(
+            "/api/message",
+            b'{"sender_id":"classmate_a","conversation_id":"ct-test","content":"hi"}',
+            "application/json; charset=utf-8",
+        )
+        self.assertNotEqual(status, 415)
+
+    def test_json_content_type_is_case_insensitive(self):
+        _data, status = self._post_raw(
+            "/api/message",
+            b'{"sender_id":"classmate_a","conversation_id":"ct-case","content":"hi"}',
+            "Application/JSON",
+        )
+        self.assertNotEqual(status, 415)
 
 
 if __name__ == "__main__":

@@ -33,6 +33,10 @@ class _BodyTooLargeError(Exception):
     pass
 
 
+class _WrongContentTypeError(Exception):
+    pass
+
+
 HTML = """<!doctype html>
 <html lang="zh-Hans">
 <head>
@@ -459,6 +463,8 @@ class WebAgentHandler(BaseHTTPRequestHandler):
                 )
             else:
                 self._send_json(HTTPStatus.OK, response_data)
+        except _WrongContentTypeError:
+            self._send_json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "content-type must be application/json"})
         except _BodyTooLargeError:
             self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": f"request body exceeds {MAX_BODY_BYTES} bytes"})
         except json.JSONDecodeError:
@@ -483,6 +489,8 @@ class WebAgentHandler(BaseHTTPRequestHandler):
             result = call_local_ai(base_url, model, prompt, api_key)
             status = HTTPStatus.OK if result["ok"] else HTTPStatus.BAD_GATEWAY
             self._send_json(status, result)
+        except _WrongContentTypeError:
+            self._send_json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "content-type must be application/json"})
         except _BodyTooLargeError:
             self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": f"request body exceeds {MAX_BODY_BYTES} bytes"})
         except json.JSONDecodeError:
@@ -495,6 +503,9 @@ class WebAgentHandler(BaseHTTPRequestHandler):
         return
 
     def _read_json(self) -> dict[str, object]:
+        ct = self.headers.get("content-type", "").lower()
+        if "application/json" not in ct:
+            raise _WrongContentTypeError()
         try:
             length = max(0, int(self.headers.get("content-length", "0")))
         except ValueError:
