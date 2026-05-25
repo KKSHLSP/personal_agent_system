@@ -993,5 +993,66 @@ class WebAgentContentTypeTest(unittest.TestCase):
         self.assertNotEqual(status, 415)
 
 
+class WebAgentMethodNotAllowedTest(unittest.TestCase):
+    """PUT / DELETE / PATCH / OPTIONS return 405 with Allow header."""
+
+    @classmethod
+    def setUpClass(cls):
+        WebAgentHandler.system = build_demo_system()
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), WebAgentHandler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _url(self, path):
+        return f"http://{self.host}:{self.port}{path}"
+
+    def _request(self, method: str, path: str):
+        req = urllib.request.Request(self._url(path), method=method)
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status, resp.headers, json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, exc.headers, json.loads(exc.read().decode())
+
+    def test_put_returns_405(self):
+        status, _, _ = self._request("PUT", "/api/message")
+        self.assertEqual(status, 405)
+
+    def test_delete_returns_405(self):
+        status, _, _ = self._request("DELETE", "/api/health")
+        self.assertEqual(status, 405)
+
+    def test_patch_returns_405(self):
+        status, _, _ = self._request("PATCH", "/api/audit")
+        self.assertEqual(status, 405)
+
+    def test_options_returns_405(self):
+        status, _, _ = self._request("OPTIONS", "/")
+        self.assertEqual(status, 405)
+
+    def test_405_body_is_json_error(self):
+        _, _, body = self._request("DELETE", "/api/message")
+        self.assertIn("error", body)
+        self.assertIn("method not allowed", body["error"])
+
+    def test_405_includes_allow_header(self):
+        _, headers, _ = self._request("PUT", "/api/stats")
+        allow = headers.get("Allow", "")
+        self.assertIn("GET", allow)
+        self.assertIn("POST", allow)
+
+    def test_405_has_no_store_cache_control(self):
+        _, headers, _ = self._request("DELETE", "/api/health")
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+
+
 if __name__ == "__main__":
     unittest.main()

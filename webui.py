@@ -362,6 +362,18 @@ def _extract_chat_content(data: dict[str, object]) -> str:
 class WebAgentHandler(BaseHTTPRequestHandler):
     system = build_demo_system()
 
+    def _method_not_allowed(self) -> None:
+        self._send_json(
+            HTTPStatus.METHOD_NOT_ALLOWED,
+            {"error": "method not allowed"},
+            extra_headers={"Allow": "GET, POST"},
+        )
+
+    do_PUT = _method_not_allowed
+    do_DELETE = _method_not_allowed
+    do_PATCH = _method_not_allowed
+    do_OPTIONS = _method_not_allowed
+
     def do_GET(self) -> None:
         try:
             if self.path == "/" or self.path == "/index.html":
