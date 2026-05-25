@@ -374,12 +374,14 @@ class WebAgentHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/stats":
             s = self.system.audit_log.stats()
+            rl = self.system.rate_limiter
             self._send_json(HTTPStatus.OK, {
                 "total": s.total,
                 "by_action": s.by_action,
                 "auto_sent_count": s.auto_sent_count,
                 "flagged_count": s.flagged_count,
                 "mean_confidence": s.mean_confidence,
+                "rate_limited_count": rl.total_rejected() if rl is not None else 0,
             })
             return
         parsed = urllib.parse.urlparse(self.path)
@@ -419,7 +421,11 @@ class WebAgentHandler(BaseHTTPRequestHandler):
 
             message = IncomingMessage(sender_id=sender_id, conversation_id=conversation_id, content=content, timestamp=datetime.now(timezone.utc), platform="web")
             result = self.system.handle_message(message)
-            self._send_json(HTTPStatus.OK, result_to_dict(result))
+            response_data = result_to_dict(result)
+            rl = self.system.rate_limiter
+            if "rate_limited" in result.draft.safety_flags and rl is not None:
+                response_data["retry_after_seconds"] = round(rl.retry_after(result.message.sender_id), 1)
+            self._send_json(HTTPStatus.OK, response_data)
         except _BodyTooLargeError:
             self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": f"request body exceeds {MAX_BODY_BYTES} bytes"})
         except json.JSONDecodeError:

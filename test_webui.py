@@ -6,6 +6,7 @@ import unittest
 import urllib.request
 
 from agent import build_demo_system
+from config import load_config
 from webui import (
     MAX_BODY_BYTES,
     MAX_CONTENT_LEN,
@@ -118,6 +119,13 @@ class WebAgentHandlerTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["models"], ["mock-model"])
 
+    def test_stats_endpoint_includes_rate_limited_count(self):
+        with urllib.request.urlopen(self._url("/api/stats")) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 200)
+        self.assertIn("rate_limited_count", data)
+        self.assertIsInstance(data["rate_limited_count"], int)
+
     def test_stats_endpoint_returns_summary_after_messages(self):
         self._post_json(
             "/api/message",
@@ -218,6 +226,69 @@ class WebAgentHandlerTest(unittest.TestCase):
 
     def _url(self, path):
         return f"http://{self.host}:{self.port}{path}"
+
+class WebAgentRateLimitTest(unittest.TestCase):
+    """Isolated server with a 1-msg-per-minute limit to test rate limiting."""
+
+    @classmethod
+    def setUpClass(cls):
+        config = load_config()
+        config.rate_limit.max_messages = 1
+        config.rate_limit.window_seconds = 60.0
+        system = build_demo_system(config)
+        handler = type("_RLHandler", (WebAgentHandler,), {"system": system})
+        cls.system = system
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _post_message(self, sender_id: str) -> dict:
+        body = json.dumps({
+            "sender_id": sender_id,
+            "conversation_id": f"rl-test-{sender_id}",
+            "content": "资料在哪里？",
+        }, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://{self.host}:{self.port}/api/message",
+            data=body,
+            method="POST",
+            headers={"content-type": "application/json"},
+        )
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def test_first_message_is_allowed(self):
+        data = self._post_message("rl_user_1")
+        self.assertNotEqual(data["decision"]["action"], "REJECT")
+        self.assertNotIn("rate_limited", data["draft"]["safety_flags"])
+
+    def test_second_message_is_rate_limited(self):
+        self._post_message("rl_user_2")  # consume the 1 allowed message
+        data = self._post_message("rl_user_2")
+        self.assertEqual(data["decision"]["action"], "REJECT")
+        self.assertIn("rate_limited", data["draft"]["safety_flags"])
+
+    def test_rate_limited_response_includes_retry_after_seconds(self):
+        self._post_message("rl_user_3")  # consume allowance
+        data = self._post_message("rl_user_3")
+        self.assertIn("retry_after_seconds", data)
+        self.assertGreater(data["retry_after_seconds"], 0.0)
+        self.assertLessEqual(data["retry_after_seconds"], 60.0)
+
+    def test_stats_rate_limited_count_increases_after_rejection(self):
+        self._post_message("rl_user_4")  # consume allowance
+        self._post_message("rl_user_4")  # triggers rejection
+        with urllib.request.urlopen(f"http://{self.host}:{self.port}/api/stats") as response:
+            data = json.loads(response.read().decode("utf-8"))
+        self.assertGreaterEqual(data["rate_limited_count"], 1)
+
 
 class LocalAiMockHandler(BaseHTTPRequestHandler):
     def do_GET(self):

@@ -380,6 +380,83 @@ class RateLimiterTest(unittest.TestCase):
         self.assertEqual(allowed.count(False), 30)
 
 
+class RateLimiterRetryAfterTest(unittest.TestCase):
+    def _make_clock(self, start: float = 0.0):
+        state = [start]
+
+        def clock() -> float:
+            return state[0]
+
+        def advance(delta: float) -> None:
+            state[0] += delta
+
+        return clock, advance
+
+    def test_retry_after_zero_when_not_limited(self):
+        clock, _ = self._make_clock()
+        rl = RateLimiter(max_messages=3, window_seconds=60.0, clock=clock)
+        rl.is_allowed("u1")
+        self.assertEqual(rl.retry_after("u1"), 0.0)
+
+    def test_retry_after_zero_for_unknown_contact(self):
+        clock, _ = self._make_clock()
+        rl = RateLimiter(max_messages=2, window_seconds=60.0, clock=clock)
+        self.assertEqual(rl.retry_after("nobody"), 0.0)
+
+    def test_retry_after_positive_when_limited(self):
+        clock, advance = self._make_clock()
+        rl = RateLimiter(max_messages=2, window_seconds=60.0, clock=clock)
+        rl.is_allowed("u1")   # t=0
+        advance(10.0)
+        rl.is_allowed("u1")   # t=10, bucket full
+        advance(10.0)         # t=20
+        rl.is_allowed("u1")   # rejected; oldest in bucket is t=0
+        # retry_after = 0 + 60 - 20 = 40
+        self.assertAlmostEqual(rl.retry_after("u1"), 40.0)
+
+    def test_retry_after_zero_after_window_expires(self):
+        clock, advance = self._make_clock()
+        rl = RateLimiter(max_messages=1, window_seconds=10.0, clock=clock)
+        rl.is_allowed("u1")   # t=0, allowed
+        advance(5.0)
+        rl.is_allowed("u1")   # t=5, rejected
+        self.assertAlmostEqual(rl.retry_after("u1"), 5.0)
+        advance(6.0)           # t=11 — timestamp at t=0 expired (cutoff=1)
+        self.assertEqual(rl.retry_after("u1"), 0.0)
+
+    def test_total_rejected_counts_all_contacts(self):
+        clock, _ = self._make_clock()
+        rl = RateLimiter(max_messages=1, window_seconds=60.0, clock=clock)
+        rl.is_allowed("u1")   # allowed
+        rl.is_allowed("u1")   # rejected
+        rl.is_allowed("u1")   # rejected again
+        rl.is_allowed("u2")   # allowed (different contact)
+        rl.is_allowed("u2")   # rejected
+        self.assertEqual(rl.total_rejected(), 3)
+
+    def test_total_rejected_zero_initially(self):
+        rl = RateLimiter(max_messages=5, window_seconds=60.0)
+        self.assertEqual(rl.total_rejected(), 0)
+
+    def test_reset_clears_rejection_count(self):
+        clock, _ = self._make_clock()
+        rl = RateLimiter(max_messages=1, window_seconds=60.0, clock=clock)
+        rl.is_allowed("u1")
+        rl.is_allowed("u1")   # rejected
+        rl.reset("u1")
+        self.assertEqual(rl.total_rejected(), 0)
+
+    def test_rate_limiter_property_exposed_on_system(self):
+        clock, _ = self._make_clock()
+        limiter = RateLimiter(max_messages=5, window_seconds=60.0, clock=clock)
+        system = make_system(auto_reply_enabled=True, rate_limiter=limiter)
+        self.assertIs(system.rate_limiter, limiter)
+
+    def test_system_without_rate_limiter_returns_none(self):
+        system = make_system(auto_reply_enabled=True, rate_limiter=None)
+        self.assertIsNone(system.rate_limiter)
+
+
 class AuditLogFileTest(unittest.TestCase):
     def setUp(self):
         self._tmp_files: list[str] = []

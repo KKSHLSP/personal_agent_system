@@ -599,6 +599,7 @@ class RateLimiter:
         self._window = window_seconds
         self._clock = clock if clock is not None else time.monotonic
         self._timestamps: dict[str, list[float]] = {}
+        self._rejected: dict[str, int] = {}
         self._lock = threading.Lock()
 
     def is_allowed(self, contact_id: str) -> bool:
@@ -609,14 +610,31 @@ class RateLimiter:
             bucket = [t for t in self._timestamps.get(contact_id, []) if t >= cutoff]
             if len(bucket) >= self._max:
                 self._timestamps[contact_id] = bucket
+                self._rejected[contact_id] = self._rejected.get(contact_id, 0) + 1
                 return False
             bucket.append(now)
             self._timestamps[contact_id] = bucket
             return True
 
+    def retry_after(self, contact_id: str) -> float:
+        """Return seconds until contact_id can send again; 0.0 if not currently limited."""
+        now = self._clock()
+        cutoff = now - self._window
+        with self._lock:
+            bucket = [t for t in self._timestamps.get(contact_id, []) if t >= cutoff]
+            if len(bucket) < self._max:
+                return 0.0
+            return max(0.0, bucket[0] + self._window - now)
+
+    def total_rejected(self) -> int:
+        """Return total number of rejected calls across all contacts."""
+        with self._lock:
+            return sum(self._rejected.values())
+
     def reset(self, contact_id: str) -> None:
         with self._lock:
             self._timestamps.pop(contact_id, None)
+            self._rejected.pop(contact_id, None)
 
 
 class PersonalAgentSystem:
@@ -643,6 +661,10 @@ class PersonalAgentSystem:
         self.audit_log = audit_log
         self._rate_limiter = rate_limiter
         self._knowledge_search_limit = knowledge_search_limit
+
+    @property
+    def rate_limiter(self) -> "RateLimiter | None":
+        return self._rate_limiter
 
     def handle_message(self, message: IncomingMessage) -> AgentResult:
         if self._rate_limiter is not None and not self._rate_limiter.is_allowed(message.sender_id):
