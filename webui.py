@@ -371,7 +371,11 @@ class WebAgentHandler(BaseHTTPRequestHandler):
                 _limit = max(0, int(_aq.get("limit", ["0"])[0]))
             except ValueError:
                 _limit = 0
-            self._send_json(HTTPStatus.OK, self.system.audit_log.to_page(offset=_offset, limit=_limit))
+            _sender_id = (_aq.get("sender_id", [""])[0]).strip()
+            _action = (_aq.get("action", [""])[0]).strip()
+            self._send_json(HTTPStatus.OK, self.system.audit_log.to_page(
+                offset=_offset, limit=_limit, sender_id=_sender_id, action=_action,
+            ))
             return
         if self.path == "/api/health":
             now = datetime.now(timezone.utc)

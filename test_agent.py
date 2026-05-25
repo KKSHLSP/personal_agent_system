@@ -895,5 +895,86 @@ class PermissionStoreFromFileTest(unittest.TestCase):
         self.assertNotEqual(result.decision.action, ReplyAction.AUTO_REPLY)
 
 
+class AuditLogFilterTest(unittest.TestCase):
+    """Unit tests for AuditLog.to_page() sender_id and action filtering."""
+
+    def _make_log_with_entries(self) -> AuditLog:
+        log = AuditLog()
+        system = make_system(auto_reply_enabled=True)
+        system.audit_log = log
+        # alice sends a message that hits the knowledge base -> AUTO_REPLY
+        system.handle_message(message("资料在哪里？", sender_id="alice"))
+        # bob sends an unknown message -> ASK_USER (no knowledge match)
+        bob_system = make_system(auto_reply_enabled=False, contact_id="bob")
+        bob_system.audit_log = log
+        bob_system.handle_message(message("随便说说", sender_id="bob"))
+        # alice sends a sensitive message -> REJECT
+        system.handle_message(message("密码是多少？", sender_id="alice"))
+        return log
+
+    def test_no_filters_returns_all(self):
+        log = self._make_log_with_entries()
+        result = log.to_page()
+        self.assertEqual(result["total"], 3)
+        self.assertEqual(len(result["entries"]), 3)
+        self.assertNotIn("filter_sender_id", result)
+        self.assertNotIn("filter_action", result)
+
+    def test_filter_by_sender_id(self):
+        log = self._make_log_with_entries()
+        result = log.to_page(sender_id="alice")
+        self.assertEqual(result["total"], 2)
+        for entry in result["entries"]:
+            self.assertEqual(entry["sender_id"], "alice")
+        self.assertEqual(result["filter_sender_id"], "alice")
+
+    def test_filter_by_action_uppercase(self):
+        log = self._make_log_with_entries()
+        result = log.to_page(action="REJECT")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["entries"][0]["action"], "REJECT")
+        self.assertEqual(result["filter_action"], "REJECT")
+
+    def test_filter_by_action_lowercase_normalized(self):
+        log = self._make_log_with_entries()
+        result = log.to_page(action="auto_reply")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["entries"][0]["action"], "AUTO_REPLY")
+        self.assertEqual(result["filter_action"], "AUTO_REPLY")
+
+    def test_filter_sender_and_action_combined(self):
+        log = self._make_log_with_entries()
+        result = log.to_page(sender_id="alice", action="REJECT")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["entries"][0]["sender_id"], "alice")
+        self.assertEqual(result["entries"][0]["action"], "REJECT")
+
+    def test_filter_with_no_matches_returns_empty(self):
+        log = self._make_log_with_entries()
+        result = log.to_page(sender_id="nobody")
+        self.assertEqual(result["total"], 0)
+        self.assertEqual(result["entries"], [])
+
+    def test_filter_unknown_action_returns_empty(self):
+        log = self._make_log_with_entries()
+        result = log.to_page(action="NONEXISTENT")
+        self.assertEqual(result["total"], 0)
+        self.assertEqual(result["entries"], [])
+
+    def test_pagination_applies_after_filtering(self):
+        log = self._make_log_with_entries()
+        # alice has 2 entries; limit=1 should return only first
+        result = log.to_page(sender_id="alice", limit=1)
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(len(result["entries"]), 1)
+
+    def test_offset_applies_after_filtering(self):
+        log = self._make_log_with_entries()
+        # alice has 2 entries; offset=1 should return only the second
+        result = log.to_page(sender_id="alice", offset=1)
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(len(result["entries"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

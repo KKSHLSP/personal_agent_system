@@ -3,6 +3,7 @@ from http.server import BaseHTTPRequestHandler
 import json
 import threading
 import unittest
+import urllib.parse
 import urllib.request
 
 from agent import build_demo_system
@@ -463,6 +464,116 @@ class WebAgentAuditPaginationTest(unittest.TestCase):
         status, data = self._get_audit("?offset=-3")
         self.assertEqual(status, 200)
         self.assertEqual(data["offset"], 0)
+
+
+class WebAgentAuditFilterTest(unittest.TestCase):
+    """Integration tests for ?sender_id= and ?action= filter params on /api/audit."""
+
+    @classmethod
+    def setUpClass(cls):
+        WebAgentHandler.system = build_demo_system()
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), WebAgentHandler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        # Send two messages from "filter_alice" (should auto-reply) and one from "filter_bob"
+        for sender, content in [
+            ("filter_alice", "资料在哪里？"),
+            ("filter_alice", "资料在哪里？"),
+            ("filter_bob", "资料在哪里？"),
+        ]:
+            body = json.dumps({"sender_id": sender, "conversation_id": f"fc-{sender}", "content": content}).encode()
+            req = urllib.request.Request(
+                f"http://{cls.host}:{cls.port}/api/message",
+                data=body,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req):
+                pass
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _get_audit(self, query=""):
+        url = f"http://{self.host}:{self.port}/api/audit{query}"
+        with urllib.request.urlopen(url) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def test_filter_by_sender_id_returns_only_matching(self):
+        status, data = self._get_audit("?sender_id=filter_alice")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], 2)
+        for entry in data["entries"]:
+            self.assertEqual(entry["sender_id"], "filter_alice")
+        self.assertEqual(data["filter_sender_id"], "filter_alice")
+
+    def test_filter_by_url_encoded_sender_id(self):
+        sender_id = "filter user 中文"
+        body = json.dumps({
+            "sender_id": sender_id,
+            "conversation_id": "fc-encoded",
+            "content": "资料在哪里？",
+        }, ensure_ascii=False).encode()
+        req = urllib.request.Request(
+            f"http://{self.host}:{self.port}/api/message",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req):
+            pass
+
+        query = "?sender_id=" + urllib.parse.quote(sender_id)
+        status, data = self._get_audit(query)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["entries"][0]["sender_id"], sender_id)
+
+    def test_filter_by_sender_id_bob_returns_one(self):
+        status, data = self._get_audit("?sender_id=filter_bob")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["entries"][0]["sender_id"], "filter_bob")
+
+    def test_filter_by_unknown_sender_returns_empty(self):
+        status, data = self._get_audit("?sender_id=nobody_here")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], 0)
+        self.assertEqual(data["entries"], [])
+
+    def test_filter_action_lowercase_accepted(self):
+        status, data = self._get_audit("?action=auto_reply")
+        self.assertEqual(status, 200)
+        # At least the three messages above triggered some action; verify filter key is uppercased
+        self.assertEqual(data["filter_action"], "AUTO_REPLY")
+        for entry in data["entries"]:
+            self.assertEqual(entry["action"], "AUTO_REPLY")
+
+    def test_filter_nonexistent_action_returns_empty(self):
+        status, data = self._get_audit("?action=BOGUS_ACTION")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], 0)
+
+    def test_filter_absent_keys_not_in_response(self):
+        status, data = self._get_audit()
+        self.assertEqual(status, 200)
+        self.assertNotIn("filter_sender_id", data)
+        self.assertNotIn("filter_action", data)
+
+    def test_combined_sender_and_action_filter(self):
+        status, data = self._get_audit("?sender_id=filter_alice&action=AUTO_REPLY")
+        self.assertEqual(status, 200)
+        for entry in data["entries"]:
+            self.assertEqual(entry["sender_id"], "filter_alice")
+            self.assertEqual(entry["action"], "AUTO_REPLY")
+
+    def test_filter_and_pagination_combined(self):
+        status, data = self._get_audit("?sender_id=filter_alice&limit=1")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(len(data["entries"]), 1)
 
 
 if __name__ == "__main__":

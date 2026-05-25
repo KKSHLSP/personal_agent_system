@@ -552,23 +552,42 @@ class AuditLog:
             mean_confidence=round(total_conf / len(entries), 4),
         )
 
-    def to_page(self, offset: int = 0, limit: int = 0) -> dict:
-        """Return a paginated slice of entries.
+    def to_page(
+        self,
+        offset: int = 0,
+        limit: int = 0,
+        sender_id: str = "",
+        action: str = "",
+    ) -> dict:
+        """Return a filtered, paginated slice of entries.
 
-        offset: 0-based start index (clamped to >=0).
-        limit:  max entries to return; 0 or negative means return all.
+        offset:    0-based start index into the filtered set (clamped to >=0).
+        limit:     max entries to return; 0 or negative means return all.
+        sender_id: if non-empty, only include entries matching this sender.
+        action:    if non-empty, only include entries whose action value matches
+                   (case-insensitive; e.g. "auto_reply" or "AUTO_REPLY").
         """
         all_entries = self.snapshot()
+        if sender_id:
+            all_entries = [e for e in all_entries if e.sender_id == sender_id]
+        if action:
+            action_upper = action.upper()
+            all_entries = [e for e in all_entries if e.action.value == action_upper]
         total = len(all_entries)
         offset = max(0, offset)
         actual_limit = limit if limit > 0 else total
         page = all_entries[offset: offset + actual_limit]
-        return {
+        result: dict = {
             "entries": [self._entry_to_dict(e) for e in page],
             "total": total,
             "offset": offset,
             "limit": actual_limit,
         }
+        if sender_id:
+            result["filter_sender_id"] = sender_id
+        if action:
+            result["filter_action"] = action.upper()
+        return result
 
     def to_json(self) -> str:
         payload = [self._entry_to_dict(entry) for entry in self.snapshot()]
