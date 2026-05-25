@@ -39,6 +39,7 @@ class WebAgentHandlerTest(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         self.assertIn("个人数字分身 Agent", body)
+        self.assertIn("data.entries", body)
 
     def test_message_endpoint_returns_agent_decision(self):
         payload = {
@@ -68,7 +69,9 @@ class WebAgentHandlerTest(unittest.TestCase):
             data = json.loads(response.read().decode("utf-8"))
 
         self.assertEqual(response.status, 200)
-        self.assertTrue(any(entry["conversation_id"] == "web-test-audit" for entry in data))
+        self.assertIn("entries", data)
+        self.assertIn("total", data)
+        self.assertTrue(any(entry["conversation_id"] == "web-test-audit" for entry in data["entries"]))
 
     def test_message_endpoint_rejects_sensitive_content(self):
         payload = {
@@ -366,6 +369,100 @@ class LocalAiMockHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         return
+
+
+class WebAgentAuditPaginationTest(unittest.TestCase):
+    """Isolated server populated with a known number of audit entries."""
+
+    N = 5  # messages to pre-populate
+
+    @classmethod
+    def setUpClass(cls):
+        WebAgentHandler.system = build_demo_system()
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), WebAgentHandler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        # populate N audit entries
+        for i in range(cls.N):
+            body = json.dumps({"sender_id": "pager", "conversation_id": f"pg-{i}", "content": "资料在哪里？"}).encode()
+            req = urllib.request.Request(
+                f"http://{cls.host}:{cls.port}/api/message",
+                data=body,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req):
+                pass
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _get_audit(self, query=""):
+        url = f"http://{self.host}:{self.port}/api/audit{query}"
+        with urllib.request.urlopen(url) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def test_no_params_returns_all_entries(self):
+        status, data = self._get_audit()
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], self.N)
+        self.assertEqual(len(data["entries"]), self.N)
+        self.assertEqual(data["offset"], 0)
+        self.assertEqual(data["limit"], self.N)
+
+    def test_limit_restricts_returned_count(self):
+        status, data = self._get_audit("?limit=2")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], self.N)
+        self.assertEqual(len(data["entries"]), 2)
+        self.assertEqual(data["limit"], 2)
+        self.assertEqual(data["offset"], 0)
+
+    def test_offset_skips_entries(self):
+        _, full = self._get_audit()
+        _, paged = self._get_audit("?offset=2")
+        self.assertEqual(paged["total"], self.N)
+        self.assertEqual(paged["offset"], 2)
+        self.assertEqual(len(paged["entries"]), self.N - 2)
+        # first entry in paged slice should match index 2 of full
+        self.assertEqual(paged["entries"][0]["conversation_id"], full["entries"][2]["conversation_id"])
+
+    def test_limit_and_offset_combined(self):
+        status, data = self._get_audit("?limit=2&offset=1")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data["entries"]), 2)
+        self.assertEqual(data["offset"], 1)
+        self.assertEqual(data["limit"], 2)
+
+    def test_offset_beyond_end_returns_empty_entries(self):
+        status, data = self._get_audit(f"?offset={self.N + 10}")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], self.N)
+        self.assertEqual(data["entries"], [])
+
+    def test_invalid_limit_treated_as_all(self):
+        status, data = self._get_audit("?limit=abc")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data["entries"]), self.N)
+
+    def test_invalid_offset_treated_as_zero(self):
+        status, data = self._get_audit("?offset=xyz")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["offset"], 0)
+        self.assertEqual(len(data["entries"]), self.N)
+
+    def test_negative_limit_treated_as_all(self):
+        status, data = self._get_audit("?limit=-1")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data["entries"]), self.N)
+
+    def test_negative_offset_clamped_to_zero(self):
+        status, data = self._get_audit("?offset=-3")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["offset"], 0)
 
 
 if __name__ == "__main__":

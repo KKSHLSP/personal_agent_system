@@ -222,12 +222,13 @@ HTML = """<!doctype html>
       try {
         const response = await fetch("/api/audit");
         const data = await response.json();
-        if (!data.length) {
+        const entries = Array.isArray(data) ? data : data.entries || [];
+        if (!entries.length) {
           auditList.textContent = "暂无记录。";
           return;
         }
         auditList.innerHTML = "";
-        for (const entry of data.slice().reverse()) {
+        for (const entry of entries.slice().reverse()) {
           const item = document.createElement("div");
           item.className = "audit-item";
           const title = document.createElement("strong");
@@ -359,8 +360,18 @@ class WebAgentHandler(BaseHTTPRequestHandler):
         if self.path == "/" or self.path == "/index.html":
             self._send_text(HTTPStatus.OK, HTML, "text/html; charset=utf-8")
             return
-        if self.path == "/api/audit":
-            self._send_text(HTTPStatus.OK, self.system.audit_log.to_json(), "application/json; charset=utf-8")
+        _audit_parsed = urllib.parse.urlparse(self.path)
+        if _audit_parsed.path == "/api/audit":
+            _aq = urllib.parse.parse_qs(_audit_parsed.query)
+            try:
+                _offset = max(0, int(_aq.get("offset", ["0"])[0]))
+            except ValueError:
+                _offset = 0
+            try:
+                _limit = max(0, int(_aq.get("limit", ["0"])[0]))
+            except ValueError:
+                _limit = 0
+            self._send_json(HTTPStatus.OK, self.system.audit_log.to_page(offset=_offset, limit=_limit))
             return
         if self.path == "/api/health":
             now = datetime.now(timezone.utc)

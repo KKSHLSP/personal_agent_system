@@ -552,6 +552,24 @@ class AuditLog:
             mean_confidence=round(total_conf / len(entries), 4),
         )
 
+    def to_page(self, offset: int = 0, limit: int = 0) -> dict:
+        """Return a paginated slice of entries.
+
+        offset: 0-based start index (clamped to >=0).
+        limit:  max entries to return; 0 or negative means return all.
+        """
+        all_entries = self.snapshot()
+        total = len(all_entries)
+        offset = max(0, offset)
+        actual_limit = limit if limit > 0 else total
+        page = all_entries[offset: offset + actual_limit]
+        return {
+            "entries": [self._entry_to_dict(e) for e in page],
+            "total": total,
+            "offset": offset,
+            "limit": actual_limit,
+        }
+
     def to_json(self) -> str:
         payload = [self._entry_to_dict(entry) for entry in self.snapshot()]
         return json.dumps(payload, ensure_ascii=False, indent=2)
