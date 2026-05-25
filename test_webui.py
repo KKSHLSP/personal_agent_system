@@ -246,6 +246,14 @@ class WebAgentHandlerTest(unittest.TestCase):
             self.assertEqual(response.headers.get("x-content-type-options"), "nosniff")
             self.assertEqual(response.headers.get("x-frame-options"), "DENY")
 
+    def test_api_response_has_no_store_cache_control(self):
+        with urllib.request.urlopen(self._url("/api/health")) as response:
+            self.assertEqual(response.headers.get("cache-control"), "no-store")
+
+    def test_html_response_has_no_store_cache_control(self):
+        with urllib.request.urlopen(self._url("/")) as response:
+            self.assertEqual(response.headers.get("cache-control"), "no-store")
+
     def test_clean_model_text_preserves_normal_text(self):
         self.assertEqual(clean_model_text("正常回答。"), "正常回答。")
 
