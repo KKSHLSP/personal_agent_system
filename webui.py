@@ -399,6 +399,7 @@ class WebAgentHandler(BaseHTTPRequestHandler):
                     "auto_sent_count": s.auto_sent_count,
                     "flagged_count": s.flagged_count,
                     "mean_confidence": s.mean_confidence,
+                    "by_flag": s.by_flag,
                     "rate_limited_count": rl.total_rejected() if rl is not None else 0,
                     "rate_limited_by_sender": rl.per_contact_rejected() if rl is not None else {},
                 })

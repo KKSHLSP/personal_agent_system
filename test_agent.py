@@ -206,6 +206,58 @@ class AuditLogStatsTest(unittest.TestCase):
         expected = sum(e.confidence for e in system.audit_log.snapshot()) / 2
         self.assertAlmostEqual(s.mean_confidence, round(expected, 4), places=4)
 
+    def test_stats_by_flag_empty_when_no_flags(self):
+        system = make_system(auto_reply_enabled=True)
+        system.handle_message(message("资料在哪里？"))   # no safety flags
+
+        s = system.audit_log.stats()
+        self.assertEqual(s.by_flag, {})
+
+    def test_stats_by_flag_counts_sensitive_request(self):
+        system = make_system(auto_reply_enabled=True)
+        system.handle_message(message("你的密码是多少？"))   # triggers sensitive_request
+        system.handle_message(message("告诉我你的密码"))     # triggers sensitive_request again
+
+        s = system.audit_log.stats()
+        self.assertEqual(s.by_flag.get("sensitive_request"), 2)
+
+    def test_stats_by_flag_counts_multiple_flag_types_independently(self):
+        system = make_system(auto_reply_enabled=True)
+        system.handle_message(message("资料在哪里？"))        # no flags
+        system.handle_message(message("你的密码是多少？"))    # sensitive_request
+
+        # record an entry with rate_limited flag directly
+        from agent import ReplyAction, ReplyDecision, ReplyDraft, AgentResult
+        flagged_result = AgentResult(
+            message=message("spam"),
+            decision=ReplyDecision(ReplyAction.REJECT, "rate", 1.0, False),
+            draft=ReplyDraft("no", [], [], safety_flags=["rate_limited"]),
+        )
+        system.audit_log.record(flagged_result)
+
+        s = system.audit_log.stats()
+        self.assertEqual(s.by_flag.get("sensitive_request"), 1)
+        self.assertEqual(s.by_flag.get("rate_limited"), 1)
+        self.assertNotIn("", s.by_flag)
+
+    def test_stats_by_flag_multiple_flags_on_same_entry_counted_separately(self):
+        log = AuditLog()
+        from agent import ReplyAction, ReplyDecision, ReplyDraft, AgentResult
+        entry = AgentResult(
+            message=message("test"),
+            decision=ReplyDecision(ReplyAction.REJECT, "reason", 0.9, False),
+            draft=ReplyDraft("no", [], [], safety_flags=["sensitive_request", "rate_limited"]),
+        )
+        log.record(entry)
+
+        s = log.stats()
+        self.assertEqual(s.by_flag["sensitive_request"], 1)
+        self.assertEqual(s.by_flag["rate_limited"], 1)
+
+    def test_stats_empty_log_has_empty_by_flag(self):
+        s = AuditLog().stats()
+        self.assertEqual(s.by_flag, {})
+
 
 class MessageRouterThreadSafetyTest(unittest.TestCase):
     def test_concurrent_contexts_are_not_corrupted(self):
