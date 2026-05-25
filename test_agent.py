@@ -7,6 +7,7 @@ import unittest
 from unittest import mock
 
 from agent import (
+    AuditEntry,
     AuditLog,
     AuditStats,
     ConversationContext,
@@ -1083,6 +1084,85 @@ class RateLimiterPerContactRejectedTest(unittest.TestCase):
             rl.is_allowed(contact)  # allowed
             rl.is_allowed(contact)  # rejected
         self.assertEqual(rl.total_rejected(), sum(rl.per_contact_rejected().values()))
+
+
+class AuditEntryRequestIdTest(unittest.TestCase):
+    """AuditEntry stores request_id from record(); survives round-trip through file."""
+
+    def _make_msg(self) -> IncomingMessage:
+        return IncomingMessage(
+            sender_id="tester", conversation_id="conv-1",
+            content="hello", timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            platform="test",
+        )
+
+    def test_record_stores_request_id(self):
+        log = AuditLog()
+        system = build_demo_system()
+        system.audit_log = log
+        msg = self._make_msg()
+        system.handle_message(msg, request_id="abc123")
+        self.assertEqual(log.entries[-1].request_id, "abc123")
+
+    def test_record_default_request_id_empty(self):
+        log = AuditLog()
+        system = build_demo_system()
+        system.audit_log = log
+        msg = self._make_msg()
+        system.handle_message(msg)
+        self.assertEqual(log.entries[-1].request_id, "")
+
+    def test_entry_to_dict_includes_request_id(self):
+        log = AuditLog()
+        system = build_demo_system()
+        system.audit_log = log
+        msg = self._make_msg()
+        system.handle_message(msg, request_id="req-xyz")
+        d = AuditLog._entry_to_dict(log.entries[-1])
+        self.assertEqual(d["request_id"], "req-xyz")
+
+    def test_dict_to_entry_loads_request_id(self):
+        log = AuditLog()
+        system = build_demo_system()
+        system.audit_log = log
+        msg = self._make_msg()
+        system.handle_message(msg, request_id="round-trip")
+        d = AuditLog._entry_to_dict(log.entries[-1])
+        entry = AuditLog._dict_to_entry(d)
+        self.assertEqual(entry.request_id, "round-trip")
+
+    def test_dict_to_entry_missing_request_id_defaults_empty(self):
+        log = AuditLog()
+        system = build_demo_system()
+        system.audit_log = log
+        msg = self._make_msg()
+        system.handle_message(msg)
+        d = AuditLog._entry_to_dict(log.entries[-1])
+        del d["request_id"]
+        entry = AuditLog._dict_to_entry(d)
+        self.assertEqual(entry.request_id, "")
+
+    def test_request_id_persisted_to_file(self):
+        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
+            path = f.name
+        try:
+            system = build_demo_system()
+            system.audit_log = AuditLog(log_file=path)
+            msg = self._make_msg()
+            system.handle_message(msg, request_id="persist-me")
+            log2 = AuditLog(log_file=path)
+            self.assertEqual(log2.entries[0].request_id, "persist-me")
+        finally:
+            os.unlink(path)
+
+    def test_rate_limited_path_stores_request_id(self):
+        log = AuditLog()
+        system = build_demo_system()
+        system.audit_log = log
+        system._rate_limiter = RateLimiter(max_messages=0, window_seconds=60.0)
+        msg = self._make_msg()
+        system.handle_message(msg, request_id="rl-req")
+        self.assertEqual(log.entries[-1].request_id, "rl-req")
 
 
 if __name__ == "__main__":

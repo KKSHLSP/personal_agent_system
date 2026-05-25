@@ -463,7 +463,7 @@ class WebAgentHandler(BaseHTTPRequestHandler):
                 return
 
             message = IncomingMessage(sender_id=sender_id, conversation_id=conversation_id, content=content, timestamp=datetime.now(timezone.utc), platform="web")
-            result = self.system.handle_message(message)
+            result = self.system.handle_message(message, request_id=self._request_id)
             response_data = result_to_dict(result)
             rl = self.system.rate_limiter
             if "rate_limited" in result.draft.safety_flags and rl is not None:
@@ -531,6 +531,14 @@ class WebAgentHandler(BaseHTTPRequestHandler):
     def _send_json(self, status: HTTPStatus, payload: dict[str, object], extra_headers: dict[str, str] | None = None) -> None:
         self._send_text(status, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8", extra_headers)
 
+    @property
+    def _request_id(self) -> str:
+        try:
+            return self.__request_id  # type: ignore[attr-defined]
+        except AttributeError:
+            self.__request_id: str = uuid.uuid4().hex
+            return self.__request_id
+
     def _send_text(self, status: HTTPStatus, text: str, content_type: str, extra_headers: dict[str, str] | None = None) -> None:
         body = text.encode("utf-8")
         self.send_response(status.value)
@@ -539,7 +547,7 @@ class WebAgentHandler(BaseHTTPRequestHandler):
         self.send_header("cache-control", "no-store")
         self.send_header("x-content-type-options", "nosniff")
         self.send_header("x-frame-options", "DENY")
-        self.send_header("x-request-id", uuid.uuid4().hex)
+        self.send_header("x-request-id", self._request_id)
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
         self.end_headers()

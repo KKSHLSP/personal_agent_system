@@ -1129,5 +1129,57 @@ class WebAgentRequestIdTest(unittest.TestCase):
         self.assertNotEqual(rid1, rid2)
 
 
+class WebAgentRequestIdAuditCorrelationTest(unittest.TestCase):
+    """X-Request-ID on /api/message response matches the audit entry's request_id."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.system = build_demo_system()
+        handler = type("_CorrHandler", (WebAgentHandler,), {"system": cls.system})
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _url(self, path: str) -> str:
+        return f"http://{self.host}:{self.port}{path}"
+
+    def _post_message(self, content: str, sender: str = "tester") -> tuple[str, str]:
+        """Return (response_request_id, audit_request_id) for a /api/message call."""
+        body = json.dumps({"content": content, "sender_id": sender}).encode("utf-8")
+        request = urllib.request.Request(
+            self._url("/api/message"), data=body, method="POST",
+            headers={"content-type": "application/json"},
+        )
+        before_count = len(self.system.audit_log.entries)
+        with urllib.request.urlopen(request) as resp:
+            rid_header = resp.headers.get("x-request-id", "")
+        entries = self.system.audit_log.entries
+        # The new entry is the one just added
+        new_entries = [e for e in entries[before_count:] if e.sender_id == sender]
+        rid_audit = new_entries[-1].request_id if new_entries else ""
+        return rid_header, rid_audit
+
+    def test_request_id_matches_audit_entry(self):
+        rid_header, rid_audit = self._post_message("hello world", sender="alice")
+        self.assertEqual(rid_header, rid_audit)
+        self.assertTrue(len(rid_header) == 32)
+
+    def test_two_requests_have_different_audit_request_ids(self):
+        _, rid1 = self._post_message("first", sender="bob")
+        _, rid2 = self._post_message("second", sender="bob")
+        self.assertNotEqual(rid1, rid2)
+
+    def test_audit_request_id_is_32_char_hex(self):
+        _, rid = self._post_message("check hex", sender="carol")
+        self.assertTrue(len(rid) == 32 and all(c in "0123456789abcdef" for c in rid))
+
+
 if __name__ == "__main__":
     unittest.main()

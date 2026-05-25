@@ -111,6 +111,7 @@ class AuditEntry:
     evidence: list[str]
     safety_flags: list[str]
     auto_sent: bool
+    request_id: str = ""
 
 
 class PlatformAdapter(Protocol):
@@ -466,7 +467,7 @@ class AuditLog:
         if log_file:
             self._load_existing()
 
-    def record(self, result: AgentResult) -> None:
+    def record(self, result: AgentResult, request_id: str = "") -> None:
         entry = AuditEntry(
             timestamp=datetime.now(timezone.utc),
             conversation_id=result.message.conversation_id,
@@ -477,6 +478,7 @@ class AuditLog:
             evidence=result.draft.evidence,
             safety_flags=result.draft.safety_flags,
             auto_sent=result.should_send,
+            request_id=request_id,
         )
         with self._lock:
             self.entries.append(entry)
@@ -527,6 +529,7 @@ class AuditLog:
             evidence=list(d.get("evidence", [])),
             safety_flags=list(d.get("safety_flags", [])),
             auto_sent=bool(d["auto_sent"]),
+            request_id=str(d.get("request_id", "")),
         )
 
     def stats(self) -> AuditStats:
@@ -713,7 +716,7 @@ class PersonalAgentSystem:
     def rate_limiter(self) -> "RateLimiter | None":
         return self._rate_limiter
 
-    def handle_message(self, message: IncomingMessage) -> AgentResult:
+    def handle_message(self, message: IncomingMessage, request_id: str = "") -> AgentResult:
         if self._rate_limiter is not None and not self._rate_limiter.is_allowed(message.sender_id):
             decision = ReplyDecision(
                 ReplyAction.REJECT,
@@ -728,7 +731,7 @@ class PersonalAgentSystem:
                 safety_flags=["rate_limited"],
             )
             result = AgentResult(message=message, decision=decision, draft=draft)
-            self.audit_log.record(result)
+            self.audit_log.record(result, request_id=request_id)
             return result
 
         permission = self.permission_store.get_profile(message.sender_id)
@@ -764,7 +767,7 @@ class PersonalAgentSystem:
 
         if result.should_send:
             self.adapter.send_reply(message.conversation_id, draft.text)
-        self.audit_log.record(result)
+        self.audit_log.record(result, request_id=request_id)
         return result
 
     def run_once(self) -> list[AgentResult]:
