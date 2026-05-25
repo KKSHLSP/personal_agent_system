@@ -1499,5 +1499,65 @@ class WebAgentStatsByPlatformTest(unittest.TestCase):
         self.assertEqual(platform_total, data["total"])
 
 
+class WebAgentAuditPlatformFilterTest(unittest.TestCase):
+    """/api/audit?platform= filters audit entries by platform."""
+
+    @classmethod
+    def setUpClass(cls):
+        system = build_demo_system()
+        handler = type("_PlatFilterHandler", (WebAgentHandler,), {"system": system})
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        # Send two web messages so we have known platform entries.
+        for i in range(2):
+            body = json.dumps({"sender_id": f"user{i}", "conversation_id": f"plat-filter-{i}", "content": "hi"}).encode()
+            req = urllib.request.Request(
+                f"http://{cls.host}:{cls.port}/api/message",
+                data=body,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req):
+                pass
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _get_audit(self, qs: str = "") -> dict:
+        url = f"http://{self.host}:{self.port}/api/audit"
+        if qs:
+            url += "?" + qs
+        with urllib.request.urlopen(url) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def test_platform_filter_returns_only_web_entries(self):
+        data = self._get_audit("platform=web")
+        self.assertGreaterEqual(data["total"], 2)
+        for entry in data["entries"]:
+            self.assertEqual(entry["platform"], "web")
+
+    def test_platform_filter_case_insensitive(self):
+        data_lower = self._get_audit("platform=web")
+        data_upper = self._get_audit("platform=WEB")
+        self.assertEqual(data_lower["total"], data_upper["total"])
+
+    def test_platform_filter_no_match_returns_empty(self):
+        data = self._get_audit("platform=slack")
+        self.assertEqual(data["total"], 0)
+        self.assertEqual(data["entries"], [])
+
+    def test_filter_platform_echoed_in_response(self):
+        data = self._get_audit("platform=web")
+        self.assertEqual(data.get("filter_platform"), "web")
+
+    def test_no_platform_filter_key_when_not_sent(self):
+        data = self._get_audit()
+        self.assertNotIn("filter_platform", data)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -600,6 +600,7 @@ class AuditLog:
         since: str = "",
         until: str = "",
         order: str = "asc",
+        platform: str = "",
     ) -> dict:
         """Return a filtered, paginated slice of entries.
 
@@ -614,6 +615,8 @@ class AuditLog:
                    this timestamp.  Invalid strings are silently ignored.
         order:     "asc" (oldest first, default) or "desc" (newest first).
                    Any other value is treated as "asc".
+        platform:  if non-empty, only include entries matching this platform
+                   (case-insensitive; e.g. "web" or "Web").
         """
         all_entries = self.snapshot()
         if sender_id:
@@ -621,6 +624,9 @@ class AuditLog:
         if action:
             action_upper = action.upper()
             all_entries = [e for e in all_entries if e.action.value == action_upper]
+        if platform:
+            platform_lower = str(platform).lower()
+            all_entries = [e for e in all_entries if e.platform.lower() == platform_lower]
         since_dt = _parse_iso_dt(since) if since else None
         until_dt = _parse_iso_dt(until) if until else None
         if since_dt is not None:
@@ -648,6 +654,8 @@ class AuditLog:
             result["filter_since"] = since_dt.isoformat()
         if until_dt is not None:
             result["filter_until"] = until_dt.isoformat()
+        if platform:
+            result["filter_platform"] = str(platform).lower()
         if desc:
             result["order"] = "desc"
         return result

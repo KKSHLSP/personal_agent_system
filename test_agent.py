@@ -1532,5 +1532,74 @@ class AuditEntryPlatformTest(unittest.TestCase):
         self.assertNotIn("", stats.by_platform)
 
 
+class AuditLogPlatformFilterTest(unittest.TestCase):
+    """AuditLog.to_page(platform=...) filters entries by platform (case-insensitive)."""
+
+    def _make_log(self) -> "AuditLog":
+        log = AuditLog()
+        system = build_demo_system()
+        for plat, sender in [("web", "alice"), ("mock", "bob"), ("web", "charlie"), ("mobile", "dave")]:
+            msg = IncomingMessage(sender, f"conv-{plat}-{sender}", "hi", datetime.now(timezone.utc), plat)
+            log.record(system.handle_message(msg))
+        return log
+
+    def test_filter_by_exact_platform(self):
+        log = self._make_log()
+        page = log.to_page(platform="web")
+        self.assertEqual(page["total"], 2)
+        self.assertTrue(all(e["platform"] == "web" for e in page["entries"]))
+
+    def test_filter_by_platform_case_insensitive(self):
+        log = self._make_log()
+        page = log.to_page(platform="WEB")
+        self.assertEqual(page["total"], 2)
+
+    def test_filter_by_platform_mixed_case(self):
+        log = self._make_log()
+        page = log.to_page(platform="Mock")
+        self.assertEqual(page["total"], 1)
+        self.assertEqual(page["entries"][0]["platform"], "mock")
+
+    def test_filter_platform_no_match_returns_empty(self):
+        log = self._make_log()
+        page = log.to_page(platform="slack")
+        self.assertEqual(page["total"], 0)
+        self.assertEqual(page["entries"], [])
+
+    def test_non_string_platform_filter_is_safe(self):
+        log = self._make_log()
+        page = log.to_page(platform=None)  # type: ignore[arg-type]
+        self.assertEqual(page["total"], 4)
+        self.assertNotIn("filter_platform", page)
+
+    def test_filter_platform_echoed_in_response(self):
+        log = self._make_log()
+        page = log.to_page(platform="web")
+        self.assertEqual(page.get("filter_platform"), "web")
+
+    def test_filter_platform_echo_lowercased(self):
+        log = self._make_log()
+        page = log.to_page(platform="WEB")
+        self.assertEqual(page.get("filter_platform"), "web")
+
+    def test_no_filter_platform_key_when_not_set(self):
+        log = self._make_log()
+        page = log.to_page()
+        self.assertNotIn("filter_platform", page)
+
+    def test_platform_filter_combined_with_sender_id(self):
+        log = self._make_log()
+        page = log.to_page(platform="web", sender_id="alice")
+        self.assertEqual(page["total"], 1)
+        self.assertEqual(page["entries"][0]["sender_id"], "alice")
+        self.assertEqual(page["entries"][0]["platform"], "web")
+
+    def test_platform_filter_combined_with_order_desc(self):
+        log = self._make_log()
+        page = log.to_page(platform="web", order="desc")
+        self.assertEqual(page["total"], 2)
+        self.assertEqual(page.get("order"), "desc")
+
+
 if __name__ == "__main__":
     unittest.main()
