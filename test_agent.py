@@ -26,6 +26,7 @@ from agent import (
     SafetyPrivacyGuard,
     StyleProfile,
     build_demo_system,
+    _parse_iso_dt,
     _tokenize,
 )
 
@@ -1027,6 +1028,127 @@ class AuditLogFilterTest(unittest.TestCase):
         result = log.to_page(sender_id="alice", offset=1)
         self.assertEqual(result["total"], 2)
         self.assertEqual(len(result["entries"]), 1)
+
+
+class AuditLogTimestampFilterTest(unittest.TestCase):
+    """Unit tests for AuditLog.to_page() since/until timestamp filters."""
+
+    def _make_entry(self, ts: datetime, sender_id: str = "user") -> AuditEntry:
+        return AuditEntry(
+            timestamp=ts,
+            conversation_id="conv",
+            sender_id=sender_id,
+            action=ReplyAction.AUTO_REPLY,
+            reason="ok",
+            confidence=0.8,
+            evidence=[],
+            safety_flags=[],
+            auto_sent=True,
+        )
+
+    def _make_log(self) -> AuditLog:
+        log = AuditLog()
+        # three entries spaced one hour apart
+        log.entries = [
+            self._make_entry(datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)),
+            self._make_entry(datetime(2026, 1, 1, 11, 0, 0, tzinfo=timezone.utc)),
+            self._make_entry(datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)),
+        ]
+        return log
+
+    def test_since_excludes_entries_before_cutoff(self):
+        log = self._make_log()
+        result = log.to_page(since="2026-01-01T11:00:00+00:00")
+        self.assertEqual(result["total"], 2)
+        for e in result["entries"]:
+            self.assertGreaterEqual(e["timestamp"], "2026-01-01T11:00:00")
+
+    def test_until_excludes_entries_after_cutoff(self):
+        log = self._make_log()
+        result = log.to_page(until="2026-01-01T11:00:00+00:00")
+        self.assertEqual(result["total"], 2)
+        for e in result["entries"]:
+            self.assertLessEqual(e["timestamp"], "2026-01-01T11:00:00+00:00")
+
+    def test_since_and_until_together_narrow_to_exact_range(self):
+        log = self._make_log()
+        result = log.to_page(
+            since="2026-01-01T11:00:00+00:00",
+            until="2026-01-01T11:00:00+00:00",
+        )
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["entries"][0]["timestamp"], "2026-01-01T11:00:00+00:00")
+
+    def test_since_beyond_all_entries_returns_empty(self):
+        log = self._make_log()
+        result = log.to_page(since="2030-01-01T00:00:00+00:00")
+        self.assertEqual(result["total"], 0)
+        self.assertEqual(result["entries"], [])
+
+    def test_invalid_since_string_is_ignored(self):
+        log = self._make_log()
+        result = log.to_page(since="not-a-date")
+        self.assertEqual(result["total"], 3)
+        self.assertNotIn("filter_since", result)
+
+    def test_invalid_until_string_is_ignored(self):
+        log = self._make_log()
+        result = log.to_page(until="bad-value")
+        self.assertEqual(result["total"], 3)
+        self.assertNotIn("filter_until", result)
+
+    def test_since_echoed_in_response_when_valid(self):
+        log = self._make_log()
+        result = log.to_page(since="2026-01-01T11:30:00+00:00")
+        self.assertIn("filter_since", result)
+
+    def test_until_echoed_in_response_when_valid(self):
+        log = self._make_log()
+        result = log.to_page(until="2026-01-01T11:30:00+00:00")
+        self.assertIn("filter_until", result)
+
+    def test_z_suffix_accepted(self):
+        log = self._make_log()
+        result = log.to_page(since="2026-01-01T11:00:00Z")
+        self.assertEqual(result["total"], 2)
+
+    def test_naive_iso_string_treated_as_utc(self):
+        log = self._make_log()
+        result = log.to_page(since="2026-01-01T11:00:00")
+        self.assertEqual(result["total"], 2)
+
+    def test_parse_iso_dt_returns_none_for_empty_string(self):
+        self.assertIsNone(_parse_iso_dt(""))
+
+    def test_parse_iso_dt_returns_none_for_invalid_string(self):
+        self.assertIsNone(_parse_iso_dt("yesterday"))
+
+    def test_parse_iso_dt_naive_gets_utc_tzinfo(self):
+        dt = _parse_iso_dt("2026-06-01T10:00:00")
+        self.assertIsNotNone(dt)
+        self.assertEqual(dt.tzinfo, timezone.utc)
+
+    def test_parse_iso_dt_converts_offset_to_utc(self):
+        dt = _parse_iso_dt("2026-06-01T18:00:00+08:00")
+        self.assertIsNotNone(dt)
+        self.assertEqual(dt, datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc))
+
+    def test_filter_echo_normalizes_offset_to_utc(self):
+        log = self._make_log()
+        result = log.to_page(since="2026-01-01T19:00:00+08:00")
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["filter_since"], "2026-01-01T11:00:00+00:00")
+
+    def test_since_combined_with_sender_filter(self):
+        log = AuditLog()
+        log.entries = [
+            self._make_entry(datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc), sender_id="alice"),
+            self._make_entry(datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc), sender_id="alice"),
+            self._make_entry(datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc), sender_id="bob"),
+        ]
+        result = log.to_page(sender_id="alice", since="2026-01-01T11:00:00+00:00")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["entries"][0]["sender_id"], "alice")
 
 
 class RateLimiterPerContactRejectedTest(unittest.TestCase):

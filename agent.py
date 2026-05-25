@@ -459,6 +459,22 @@ class AuditStats:
     by_flag: dict[str, int] = field(default_factory=dict)
 
 
+def _parse_iso_dt(value: str) -> "datetime | None":
+    """Parse an ISO 8601 datetime string into a UTC-aware datetime.
+
+    Accepts the 'Z' suffix (Python <3.11 compat) and naive strings
+    (treated as UTC).  Returns None on any parse error.
+    """
+    v = value.strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(v)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
 class AuditLog:
     def __init__(self, log_file: str = "") -> None:
         self.entries: list[AuditEntry] = []
@@ -566,6 +582,8 @@ class AuditLog:
         limit: int = 0,
         sender_id: str = "",
         action: str = "",
+        since: str = "",
+        until: str = "",
     ) -> dict:
         """Return a filtered, paginated slice of entries.
 
@@ -574,6 +592,10 @@ class AuditLog:
         sender_id: if non-empty, only include entries matching this sender.
         action:    if non-empty, only include entries whose action value matches
                    (case-insensitive; e.g. "auto_reply" or "AUTO_REPLY").
+        since:     ISO 8601 datetime string; only include entries at or after
+                   this timestamp.  Invalid strings are silently ignored.
+        until:     ISO 8601 datetime string; only include entries at or before
+                   this timestamp.  Invalid strings are silently ignored.
         """
         all_entries = self.snapshot()
         if sender_id:
@@ -581,6 +603,12 @@ class AuditLog:
         if action:
             action_upper = action.upper()
             all_entries = [e for e in all_entries if e.action.value == action_upper]
+        since_dt = _parse_iso_dt(since) if since else None
+        until_dt = _parse_iso_dt(until) if until else None
+        if since_dt is not None:
+            all_entries = [e for e in all_entries if e.timestamp >= since_dt]
+        if until_dt is not None:
+            all_entries = [e for e in all_entries if e.timestamp <= until_dt]
         total = len(all_entries)
         offset = max(0, offset)
         actual_limit = limit if limit > 0 else total
@@ -595,6 +623,10 @@ class AuditLog:
             result["filter_sender_id"] = sender_id
         if action:
             result["filter_action"] = action.upper()
+        if since_dt is not None:
+            result["filter_since"] = since_dt.isoformat()
+        if until_dt is not None:
+            result["filter_until"] = until_dt.isoformat()
         return result
 
     def to_json(self) -> str:

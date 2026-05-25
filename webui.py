@@ -393,8 +393,11 @@ class WebAgentHandler(BaseHTTPRequestHandler):
                     _limit = 0
                 _sender_id = (_aq.get("sender_id", [""])[0]).strip()
                 _action = (_aq.get("action", [""])[0]).strip()
+                _since = (_aq.get("since", [""])[0]).strip()
+                _until = (_aq.get("until", [""])[0]).strip()
                 self._send_json(HTTPStatus.OK, self.system.audit_log.to_page(
                     offset=_offset, limit=_limit, sender_id=_sender_id, action=_action,
+                    since=_since, until=_until,
                 ))
                 return
             if self.path == "/api/health":

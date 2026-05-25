@@ -1181,5 +1181,81 @@ class WebAgentRequestIdAuditCorrelationTest(unittest.TestCase):
         self.assertTrue(len(rid) == 32 and all(c in "0123456789abcdef" for c in rid))
 
 
+class WebAgentAuditTimestampFilterTest(unittest.TestCase):
+    """Integration tests for ?since= and ?until= filter params on /api/audit."""
+
+    @classmethod
+    def setUpClass(cls):
+        from datetime import datetime, timezone
+        from agent import AuditEntry, AuditLog, ReplyAction
+        WebAgentHandler.system = build_demo_system()
+        cls.system = WebAgentHandler.system
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), WebAgentHandler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        # Inject three entries with controlled timestamps directly
+        def _entry(ts):
+            return AuditEntry(
+                timestamp=ts,
+                conversation_id="ts-conv",
+                sender_id="ts-user",
+                action=ReplyAction.AUTO_REPLY,
+                reason="ok",
+                confidence=0.8,
+                evidence=[],
+                safety_flags=[],
+                auto_sent=True,
+            )
+        cls.t_early = datetime(2026, 1, 1, 9, 0, 0, tzinfo=timezone.utc)
+        cls.t_mid = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+        cls.t_late = datetime(2026, 1, 1, 11, 0, 0, tzinfo=timezone.utc)
+        cls.system.audit_log.entries = [
+            _entry(cls.t_early),
+            _entry(cls.t_mid),
+            _entry(cls.t_late),
+        ]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _get_audit(self, query=""):
+        url = f"http://{self.host}:{self.port}/api/audit{query}"
+        with urllib.request.urlopen(url) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def test_since_param_filters_early_entry(self):
+        status, data = self._get_audit("?since=2026-01-01T10:00:00Z")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], 2)
+
+    def test_until_param_filters_late_entry(self):
+        status, data = self._get_audit("?until=2026-01-01T10:00:00Z")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], 2)
+
+    def test_since_and_until_combined(self):
+        status, data = self._get_audit("?since=2026-01-01T10:00:00Z&until=2026-01-01T10:00:00Z")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], 1)
+
+    def test_invalid_since_ignored_returns_all(self):
+        status, data = self._get_audit("?since=not-a-date")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["total"], 3)
+        self.assertNotIn("filter_since", data)
+
+    def test_filter_since_key_present_in_response_when_valid(self):
+        _, data = self._get_audit("?since=2026-01-01T09:30:00Z")
+        self.assertIn("filter_since", data)
+
+    def test_filter_until_key_present_in_response_when_valid(self):
+        _, data = self._get_audit("?until=2026-01-01T10:30:00Z")
+        self.assertIn("filter_until", data)
+
+
 if __name__ == "__main__":
     unittest.main()
