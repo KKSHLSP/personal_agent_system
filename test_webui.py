@@ -741,5 +741,77 @@ class WebAgentReadJsonTest(unittest.TestCase):
             handler._read_json()
 
 
+class WebAgentStatsRateLimitedBySenderTest(unittest.TestCase):
+    """Verify /api/stats includes rate_limited_by_sender breakdown."""
+
+    @classmethod
+    def setUpClass(cls):
+        config = load_config()
+        config.rate_limit.max_messages = 1
+        config.rate_limit.window_seconds = 60.0
+        system = build_demo_system(config)
+        handler = type("_StatsHandler", (WebAgentHandler,), {"system": system})
+        cls.system = system
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _post_message(self, sender_id: str) -> tuple[int, dict]:
+        body = json.dumps({
+            "sender_id": sender_id,
+            "conversation_id": f"stats-test-{sender_id}",
+            "content": "资料在哪里？",
+        }, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://{self.host}:{self.port}/api/message",
+            data=body, method="POST",
+            headers={"content-type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+            finally:
+                exc.close()
+
+    def _get_stats(self) -> dict:
+        with urllib.request.urlopen(f"http://{self.host}:{self.port}/api/stats") as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def test_stats_contains_rate_limited_by_sender_key(self):
+        stats = self._get_stats()
+        self.assertIn("rate_limited_by_sender", stats)
+
+    def test_rate_limited_by_sender_is_empty_before_any_limit(self):
+        stats = self._get_stats()
+        self.assertIsInstance(stats["rate_limited_by_sender"], dict)
+
+    def test_rate_limited_by_sender_populated_after_rejection(self):
+        self._post_message("stats_sender_x")   # allowed
+        self._post_message("stats_sender_x")   # rejected (limit=1/window)
+        stats = self._get_stats()
+        by_sender = stats["rate_limited_by_sender"]
+        self.assertIn("stats_sender_x", by_sender)
+        self.assertGreaterEqual(by_sender["stats_sender_x"], 1)
+
+    def test_rate_limited_count_equals_sum_of_by_sender(self):
+        # ensure at least one rejection recorded
+        self._post_message("stats_sender_y")
+        self._post_message("stats_sender_y")
+        stats = self._get_stats()
+        total = stats["rate_limited_count"]
+        by_sender_sum = sum(stats["rate_limited_by_sender"].values())
+        self.assertEqual(total, by_sender_sum)
+
+
 if __name__ == "__main__":
     unittest.main()

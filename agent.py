@@ -668,6 +668,11 @@ class RateLimiter:
         with self._lock:
             return sum(self._rejected.values())
 
+    def per_contact_rejected(self) -> dict[str, int]:
+        """Return a snapshot of rejected call counts keyed by contact_id."""
+        with self._lock:
+            return dict(self._rejected)
+
     def reset(self, contact_id: str) -> None:
         with self._lock:
             self._timestamps.pop(contact_id, None)

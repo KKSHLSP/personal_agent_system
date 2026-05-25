@@ -976,5 +976,62 @@ class AuditLogFilterTest(unittest.TestCase):
         self.assertEqual(len(result["entries"]), 1)
 
 
+class RateLimiterPerContactRejectedTest(unittest.TestCase):
+    """Tests for RateLimiter.per_contact_rejected()."""
+
+    def _limiter(self, max_messages: int = 2, window: float = 60.0) -> RateLimiter:
+        tick = 0.0
+        return RateLimiter(max_messages=max_messages, window_seconds=window, clock=lambda: tick)
+
+    def test_empty_when_no_rejections(self):
+        rl = self._limiter()
+        self.assertEqual(rl.per_contact_rejected(), {})
+
+    def test_rejected_contact_appears(self):
+        tick = 0.0
+        rl = RateLimiter(max_messages=1, window_seconds=60.0, clock=lambda: tick)
+        rl.is_allowed("alice")   # allowed
+        rl.is_allowed("alice")   # rejected
+        result = rl.per_contact_rejected()
+        self.assertEqual(result, {"alice": 1})
+
+    def test_multiple_contacts_tracked_independently(self):
+        tick = 0.0
+        rl = RateLimiter(max_messages=1, window_seconds=60.0, clock=lambda: tick)
+        rl.is_allowed("alice")   # allowed
+        rl.is_allowed("alice")   # rejected
+        rl.is_allowed("alice")   # rejected again
+        rl.is_allowed("bob")     # allowed (different bucket)
+        rl.is_allowed("bob")     # rejected
+        result = rl.per_contact_rejected()
+        self.assertEqual(result["alice"], 2)
+        self.assertEqual(result["bob"], 1)
+
+    def test_returns_snapshot_not_live_reference(self):
+        tick = 0.0
+        rl = RateLimiter(max_messages=1, window_seconds=60.0, clock=lambda: tick)
+        rl.is_allowed("alice")
+        rl.is_allowed("alice")  # rejected; count = 1
+        snapshot = rl.per_contact_rejected()
+        rl.is_allowed("alice")  # rejected again; count = 2 internally
+        self.assertEqual(snapshot["alice"], 1, "snapshot must not reflect later changes")
+
+    def test_reset_clears_contact_from_per_contact(self):
+        tick = 0.0
+        rl = RateLimiter(max_messages=1, window_seconds=60.0, clock=lambda: tick)
+        rl.is_allowed("alice")
+        rl.is_allowed("alice")  # rejected
+        rl.reset("alice")
+        self.assertNotIn("alice", rl.per_contact_rejected())
+
+    def test_total_rejected_equals_sum_of_per_contact(self):
+        tick = 0.0
+        rl = RateLimiter(max_messages=1, window_seconds=60.0, clock=lambda: tick)
+        for contact in ("a", "b", "c"):
+            rl.is_allowed(contact)  # allowed
+            rl.is_allowed(contact)  # rejected
+        self.assertEqual(rl.total_rejected(), sum(rl.per_contact_rejected().values()))
+
+
 if __name__ == "__main__":
     unittest.main()
