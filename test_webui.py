@@ -1559,5 +1559,55 @@ class WebAgentAuditPlatformFilterTest(unittest.TestCase):
         self.assertNotIn("filter_platform", data)
 
 
+class WebAgentStatsBySenderTest(unittest.TestCase):
+    """/api/stats includes by_sender breakdown from audit log."""
+
+    @classmethod
+    def setUpClass(cls):
+        system = build_demo_system()
+        handler = type("_SenderHandler", (WebAgentHandler,), {"system": system})
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        for sender in ("classmate_a", "classmate_b", "classmate_a"):
+            body = json.dumps({"sender_id": sender, "conversation_id": f"sender-test-{sender}", "content": "资料在哪里？"}).encode()
+            req = urllib.request.Request(
+                f"http://{cls.host}:{cls.port}/api/message",
+                data=body,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req):
+                pass
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def _get_stats(self):
+        with urllib.request.urlopen(f"http://{self.host}:{self.port}/api/stats") as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def test_stats_includes_by_sender_key(self):
+        data = self._get_stats()
+        self.assertIn("by_sender", data)
+
+    def test_by_sender_is_dict(self):
+        data = self._get_stats()
+        self.assertIsInstance(data["by_sender"], dict)
+
+    def test_by_sender_counts_messages_per_sender(self):
+        data = self._get_stats()
+        self.assertGreaterEqual(data["by_sender"].get("classmate_a", 0), 2)
+        self.assertGreaterEqual(data["by_sender"].get("classmate_b", 0), 1)
+
+    def test_by_sender_total_matches_total(self):
+        data = self._get_stats()
+        sender_total = sum(data["by_sender"].values())
+        self.assertEqual(sender_total, data["total"])
+
+
 if __name__ == "__main__":
     unittest.main()

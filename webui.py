@@ -424,6 +424,7 @@ class WebAgentHandler(BaseHTTPRequestHandler):
                     "mean_confidence": s.mean_confidence,
                     "by_flag": s.by_flag,
                     "by_platform": s.by_platform,
+                    "by_sender": s.by_sender,
                     "rate_limited_count": rl.total_rejected() if rl is not None else 0,
                     "rate_limited_by_sender": rl.per_contact_rejected() if rl is not None else {},
                 })

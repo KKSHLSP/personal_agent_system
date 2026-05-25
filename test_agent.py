@@ -1601,5 +1601,60 @@ class AuditLogPlatformFilterTest(unittest.TestCase):
         self.assertEqual(page.get("order"), "desc")
 
 
+class AuditLogStatsBySenderTest(unittest.TestCase):
+    """AuditStats.by_sender counts audit entries per sender_id."""
+
+    def test_by_sender_empty_on_empty_log(self):
+        stats = AuditLog().stats()
+        self.assertEqual(stats.by_sender, {})
+
+    def test_by_sender_counts_each_sender(self):
+        log = AuditLog()
+        system = build_demo_system()
+        for sender in ("classmate_a", "classmate_b", "classmate_a"):
+            msg = IncomingMessage(sender, f"conv-{sender}", "hi", datetime.now(timezone.utc), "mock")
+            log.record(system.handle_message(msg))
+        stats = log.stats()
+        self.assertEqual(stats.by_sender.get("classmate_a"), 2)
+        self.assertEqual(stats.by_sender.get("classmate_b"), 1)
+
+    def test_by_sender_single_sender_multiple_messages(self):
+        log = AuditLog()
+        system = build_demo_system()
+        for i in range(3):
+            msg = IncomingMessage("classmate_a", f"conv-{i}", "hi", datetime.now(timezone.utc), "mock")
+            log.record(system.handle_message(msg))
+        stats = log.stats()
+        self.assertEqual(stats.by_sender.get("classmate_a"), 3)
+        self.assertEqual(len(stats.by_sender), 1)
+
+    def test_by_sender_excludes_empty_sender_id(self):
+        log = AuditLog()
+        entry = AuditEntry(
+            timestamp=datetime.now(timezone.utc),
+            conversation_id="c",
+            sender_id="",
+            action=ReplyAction.AUTO_REPLY,
+            reason="r",
+            confidence=0.9,
+            evidence=[],
+            safety_flags=[],
+            auto_sent=True,
+        )
+        with log._lock:
+            log.entries.append(entry)
+        stats = log.stats()
+        self.assertNotIn("", stats.by_sender)
+
+    def test_by_sender_total_equals_sum_of_by_sender_values(self):
+        log = AuditLog()
+        system = build_demo_system()
+        for sender in ("classmate_a", "classmate_b", "classmate_c"):
+            msg = IncomingMessage(sender, f"conv-{sender}", "hi", datetime.now(timezone.utc), "mock")
+            log.record(system.handle_message(msg))
+        stats = log.stats()
+        self.assertEqual(sum(stats.by_sender.values()), stats.total)
+
+
 if __name__ == "__main__":
     unittest.main()

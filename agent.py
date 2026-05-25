@@ -459,6 +459,7 @@ class AuditStats:
     mean_confidence: float
     by_flag: dict[str, int] = field(default_factory=dict)
     by_platform: dict[str, int] = field(default_factory=dict)
+    by_sender: dict[str, int] = field(default_factory=dict)
 
 
 def _parse_iso_dt(value: str) -> "datetime | None":
@@ -566,6 +567,7 @@ class AuditLog:
         by_action: dict[str, int] = {}
         by_flag: dict[str, int] = {}
         by_platform: dict[str, int] = {}
+        by_sender: dict[str, int] = {}
         auto_sent = 0
         flagged = 0
         total_conf = 0.0
@@ -580,6 +582,8 @@ class AuditLog:
                     by_flag[flag] = by_flag.get(flag, 0) + 1
             if entry.platform:
                 by_platform[entry.platform] = by_platform.get(entry.platform, 0) + 1
+            if entry.sender_id:
+                by_sender[entry.sender_id] = by_sender.get(entry.sender_id, 0) + 1
             total_conf += entry.confidence
         return AuditStats(
             total=len(entries),
@@ -589,6 +593,7 @@ class AuditLog:
             mean_confidence=round(total_conf / len(entries), 4),
             by_flag=by_flag,
             by_platform=by_platform,
+            by_sender=by_sender,
         )
 
     def to_page(
