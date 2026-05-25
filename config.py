@@ -29,6 +29,7 @@ Environment variable overrides (all optional):
     AGENT_CONFIDENCE_CAP                  float
     AGENT_KNOWLEDGE_SEARCH_LIMIT          int
     AGENT_KNOWLEDGE_MAX_RECENT_MESSAGES   int
+    AGENT_KNOWLEDGE_FILE                  str   (empty = use built-in demo items)
     AGENT_AUDIT_LOG_FILE                  str   (empty = disabled)
     AGENT_WEBUI_HOST                      str
     AGENT_WEBUI_PORT                      int
@@ -68,6 +69,7 @@ class SafetyConfig:
 class KnowledgeConfig:
     search_limit: int = 3
     max_recent_messages: int = 10
+    knowledge_file: str = ""
 
 
 @dataclass
@@ -155,6 +157,7 @@ def _apply_env(config: AgentConfig) -> None:
     _env_float("AGENT_CONFIDENCE_CAP", config.confidence, "cap")
     _env_int("AGENT_KNOWLEDGE_SEARCH_LIMIT", config.knowledge, "search_limit")
     _env_int("AGENT_KNOWLEDGE_MAX_RECENT_MESSAGES", config.knowledge, "max_recent_messages")
+    _env_str("AGENT_KNOWLEDGE_FILE", config.knowledge, "knowledge_file")
     _env_str("AGENT_AUDIT_LOG_FILE", config.audit, "log_file")
     _env_str("AGENT_WEBUI_HOST", config.webui, "host")
     _env_int("AGENT_WEBUI_PORT", config.webui, "port")

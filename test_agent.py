@@ -23,6 +23,7 @@ from agent import (
     ReplyGenerator,
     SafetyPrivacyGuard,
     StyleProfile,
+    build_demo_system,
     _tokenize,
 )
 
@@ -543,6 +544,111 @@ class AuditLogFileTest(unittest.TestCase):
         self.assertEqual(len(lines), 20)
         for ln in lines:
             json.loads(ln)
+
+
+class KnowledgeBaseFromFileTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp_files: list[str] = []
+
+    def tearDown(self):
+        for f in self._tmp_files:
+            try:
+                os.unlink(f)
+            except FileNotFoundError:
+                pass
+
+    def _write_json(self, data) -> str:
+        fp = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w", encoding="utf-8")
+        json.dump(data, fp, ensure_ascii=False)
+        fp.close()
+        self._tmp_files.append(fp.name)
+        return fp.name
+
+    def test_loads_valid_items(self):
+        path = self._write_json([
+            {"item_id": "k1", "title": "标题A", "content": "内容A", "tags": ["public"], "keywords": ["关键词"], "sensitivity": "normal"},
+        ])
+        kb = KnowledgeBase.from_file(path)
+        matches = kb.search("关键词", {"public"})
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].item.item_id, "k1")
+
+    def test_loads_multiple_items(self):
+        path = self._write_json([
+            {"item_id": "k1", "title": "A", "content": "foo bar", "tags": ["t1"], "keywords": ["foo"]},
+            {"item_id": "k2", "title": "B", "content": "baz qux", "tags": ["t2"], "keywords": ["baz"]},
+        ])
+        kb = KnowledgeBase.from_file(path)
+        self.assertEqual(len(kb.search("foo", {"t1"})), 1)
+        self.assertEqual(len(kb.search("baz", {"t2"})), 1)
+        self.assertEqual(len(kb.search("foo", {"t2"})), 0)  # tag filter
+
+    def test_missing_file_returns_empty_knowledge_base(self):
+        kb = KnowledgeBase.from_file("/tmp/__nonexistent_kb_file__.json")
+        self.assertEqual(kb.search("anything", {"public"}), [])
+
+    def test_malformed_json_returns_empty_knowledge_base(self):
+        fp = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w", encoding="utf-8")
+        fp.write("not valid json {{{")
+        fp.close()
+        self._tmp_files.append(fp.name)
+        kb = KnowledgeBase.from_file(fp.name)
+        self.assertEqual(kb.search("anything", {"public"}), [])
+
+    def test_non_list_json_returns_empty_knowledge_base(self):
+        path = self._write_json({"item_id": "k1", "title": "A", "content": "B", "tags": ["public"], "keywords": []})
+        kb = KnowledgeBase.from_file(path)
+        self.assertEqual(kb.search("anything", {"public"}), [])
+
+    def test_skips_malformed_entries_keeps_valid_ones(self):
+        path = self._write_json([
+            {"item_id": "good", "title": "Good", "content": "valid content", "tags": ["public"], "keywords": ["valid"]},
+            {"no_item_id": True},
+            None,
+            {"item_id": "good2", "title": "Good2", "content": "another content", "tags": ["public"], "keywords": ["another"]},
+        ])
+        kb = KnowledgeBase.from_file(path)
+        ids = {m.item.item_id for m in kb.search("valid", {"public"})}
+        self.assertIn("good", ids)
+        ids2 = {m.item.item_id for m in kb.search("another", {"public"})}
+        self.assertIn("good2", ids2)
+
+    def test_sensitivity_field_is_loaded(self):
+        path = self._write_json([
+            {"item_id": "restricted", "title": "T", "content": "C", "tags": ["priv"], "keywords": ["secret"], "sensitivity": "restricted"},
+        ])
+        kb = KnowledgeBase.from_file(path)
+        matches = kb.search("secret", {"priv"})
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].item.sensitivity, "restricted")
+
+    def test_sensitivity_defaults_to_normal_when_absent(self):
+        path = self._write_json([
+            {"item_id": "k1", "title": "T", "content": "C", "tags": ["public"], "keywords": ["x"]},
+        ])
+        kb = KnowledgeBase.from_file(path)
+        matches = kb.search("x", {"public"})
+        self.assertEqual(matches[0].item.sensitivity, "normal")
+
+    def test_tags_and_keywords_can_be_empty_lists(self):
+        path = self._write_json([
+            {"item_id": "k1", "title": "T", "content": "C", "tags": [], "keywords": []},
+        ])
+        kb = KnowledgeBase.from_file(path)
+        self.assertEqual(kb.search("C", {"public"}), [])  # no visible tag match
+
+    def test_build_demo_system_uses_file_when_configured(self):
+        from config import load_config
+        path = self._write_json([
+            {"item_id": "custom", "title": "自定义知识", "content": "自定义内容，包含特殊词汇xyz。",
+             "tags": ["public", "course"], "keywords": ["xyz", "特殊"]},
+        ])
+        config = load_config()
+        config.knowledge.knowledge_file = path
+        system = build_demo_system(config)
+        msg = IncomingMessage("classmate_a", "conv_test", "xyz", datetime.now(timezone.utc), "mock")
+        result = system.handle_message(msg)
+        self.assertIn("xyz", result.draft.text + " ".join(result.draft.evidence))
 
 
 if __name__ == "__main__":

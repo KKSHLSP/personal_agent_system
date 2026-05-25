@@ -241,6 +241,52 @@ class KnowledgeBase:
     def __init__(self, items: Iterable[KnowledgeItem]) -> None:
         self._items = list(items)
 
+    @classmethod
+    def from_file(cls, path: str) -> "KnowledgeBase":
+        """Load knowledge items from a JSON file.
+
+        Expected format — a JSON array of objects::
+
+            [
+              {
+                "item_id": "doc1",
+                "title": "标题",
+                "content": "内容",
+                "tags": ["public"],
+                "keywords": ["关键词"],
+                "sensitivity": "normal"
+              }
+            ]
+
+        Malformed entries are skipped; a missing or unreadable file
+        returns an empty KnowledgeBase without raising.
+        """
+        items: list[KnowledgeItem] = []
+        try:
+            with open(path, encoding="utf-8") as fp:
+                raw = json.load(fp)
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return cls(items)
+        if not isinstance(raw, list):
+            return cls(items)
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                items.append(
+                    KnowledgeItem(
+                        item_id=str(entry["item_id"]),
+                        title=str(entry["title"]),
+                        content=str(entry["content"]),
+                        tags=set(entry.get("tags") or []),
+                        keywords=set(entry.get("keywords") or []),
+                        sensitivity=str(entry.get("sensitivity", "normal")),
+                    )
+                )
+            except (KeyError, TypeError):
+                continue
+        return cls(items)
+
     def search(self, query: str, visible_tags: set[str], limit: int = 3) -> list[KnowledgeMatch]:
         query_terms = _tokenize(query)
         matches: list[KnowledgeMatch] = []
@@ -612,32 +658,35 @@ def build_demo_system(config: AgentConfig | None = None) -> PersonalAgentSystem:
             ),
         }
     )
-    knowledge = KnowledgeBase(
-        [
-            KnowledgeItem(
-                "doc_location",
-                "课程资料位置",
-                "课程资料在班级共享盘的 Week 8 文件夹里，请查看最新版本。",
-                {"public", "course"},
-                {"资料", "哪里", "共享盘", "文件"},
-            ),
-            KnowledgeItem(
-                "homework_deadline",
-                "作业提交时间",
-                "作业截止时间是本周五 23:59，提交到课程平台。",
-                {"public", "course"},
-                {"作业", "提交", "什么时候", "截止"},
-            ),
-            KnowledgeItem(
-                "private_note",
-                "私人备注",
-                "这条资料需要本人确认后才能发送。",
-                {"private"},
-                {"私人", "备注"},
-                sensitivity="restricted",
-            ),
-        ]
-    )
+    if config.knowledge.knowledge_file:
+        knowledge = KnowledgeBase.from_file(config.knowledge.knowledge_file)
+    else:
+        knowledge = KnowledgeBase(
+            [
+                KnowledgeItem(
+                    "doc_location",
+                    "课程资料位置",
+                    "课程资料在班级共享盘的 Week 8 文件夹里，请查看最新版本。",
+                    {"public", "course"},
+                    {"资料", "哪里", "共享盘", "文件"},
+                ),
+                KnowledgeItem(
+                    "homework_deadline",
+                    "作业提交时间",
+                    "作业截止时间是本周五 23:59，提交到课程平台。",
+                    {"public", "course"},
+                    {"作业", "提交", "什么时候", "截止"},
+                ),
+                KnowledgeItem(
+                    "private_note",
+                    "私人备注",
+                    "这条资料需要本人确认后才能发送。",
+                    {"private"},
+                    {"私人", "备注"},
+                    sensitivity="restricted",
+                ),
+            ]
+        )
     style = StyleProfile(
         {
             "classmate_a": ["口语", "简短"],

@@ -62,6 +62,7 @@ class ConfigDefaultsTest(unittest.TestCase):
     def test_knowledge_defaults(self):
         self.assertEqual(self._config.knowledge.search_limit, 3)
         self.assertEqual(self._config.knowledge.max_recent_messages, 10)
+        self.assertEqual(self._config.knowledge.knowledge_file, "")
 
     def test_webui_defaults(self):
         w = self._config.webui
@@ -141,6 +142,14 @@ class ConfigJsonLoadingTest(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_knowledge_file_loadable_via_json(self):
+        path = self._write_json({"knowledge": {"knowledge_file": "/data/my_kb.json"}})
+        try:
+            config = load_config(path)
+            self.assertEqual(config.knowledge.knowledge_file, "/data/my_kb.json")
+        finally:
+            os.unlink(path)
+
     def test_safety_patterns_overridable_via_json(self):
         path = self._write_json({"safety": {"sensitive_patterns": [r"my_secret_word"]}})
         try:
@@ -191,6 +200,7 @@ _ENV_KEYS = [
     "AGENT_CONFIDENCE_CAP",
     "AGENT_KNOWLEDGE_SEARCH_LIMIT",
     "AGENT_KNOWLEDGE_MAX_RECENT_MESSAGES",
+    "AGENT_KNOWLEDGE_FILE",
     "AGENT_WEBUI_HOST",
     "AGENT_WEBUI_PORT",
     "AGENT_WEBUI_LOCAL_AI_URL",
@@ -233,6 +243,10 @@ class ConfigEnvVarTest(unittest.TestCase):
     def test_env_overrides_knowledge_max_recent_messages(self):
         os.environ["AGENT_KNOWLEDGE_MAX_RECENT_MESSAGES"] = "25"
         self.assertEqual(load_config().knowledge.max_recent_messages, 25)
+
+    def test_env_overrides_knowledge_file(self):
+        os.environ["AGENT_KNOWLEDGE_FILE"] = "/data/kb.json"
+        self.assertEqual(load_config().knowledge.knowledge_file, "/data/kb.json")
 
     def test_invalid_int_env_var_is_silently_ignored(self):
         os.environ["AGENT_WEBUI_PORT"] = "not-a-number"
