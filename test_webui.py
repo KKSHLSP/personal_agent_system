@@ -209,6 +209,36 @@ class WebAgentHandlerTest(unittest.TestCase):
             error_body = json.loads(error.read().decode("utf-8"))
         self.assertIn("base_url", error_body["error"])
 
+    def test_local_ai_models_endpoint_rejects_invalid_scheme(self):
+        url = self._url("/api/local-ai-models?base_url=ftp://127.0.0.1:8001")
+        request = urllib.request.Request(url, method="GET")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request)
+        with ctx.exception as error:
+            self.assertEqual(error.code, 400)
+            error_body = json.loads(error.read().decode("utf-8"))
+        self.assertIn("base_url", error_body["error"])
+
+    def test_local_ai_models_endpoint_rejects_file_scheme(self):
+        url = self._url("/api/local-ai-models?base_url=file:///etc/passwd")
+        request = urllib.request.Request(url, method="GET")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request)
+        with ctx.exception as error:
+            self.assertEqual(error.code, 400)
+            error_body = json.loads(error.read().decode("utf-8"))
+        self.assertIn("base_url", error_body["error"])
+
+    def test_responses_include_security_headers(self):
+        with urllib.request.urlopen(self._url("/api/health")) as response:
+            self.assertEqual(response.headers.get("x-content-type-options"), "nosniff")
+            self.assertEqual(response.headers.get("x-frame-options"), "DENY")
+
+    def test_html_response_includes_security_headers(self):
+        with urllib.request.urlopen(self._url("/")) as response:
+            self.assertEqual(response.headers.get("x-content-type-options"), "nosniff")
+            self.assertEqual(response.headers.get("x-frame-options"), "DENY")
+
     def test_clean_model_text_preserves_normal_text(self):
         self.assertEqual(clean_model_text("正常回答。"), "正常回答。")
 

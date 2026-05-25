@@ -389,6 +389,9 @@ class WebAgentHandler(BaseHTTPRequestHandler):
             query = urllib.parse.parse_qs(parsed.query)
             base_url = query.get("base_url", ["http://127.0.0.1:8001"])[0]
             api_key = query.get("api_key", [""])[0]
+            if not any(base_url.startswith(s) for s in _ALLOWED_URL_SCHEMES):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "base_url must start with http:// or https://"})
+                return
             result = list_local_ai_models(base_url, api_key)
             status = HTTPStatus.OK if result["ok"] else HTTPStatus.BAD_GATEWAY
             self._send_json(status, result)
@@ -470,6 +473,8 @@ class WebAgentHandler(BaseHTTPRequestHandler):
         self.send_response(status.value)
         self.send_header("content-type", content_type)
         self.send_header("content-length", str(len(body)))
+        self.send_header("x-content-type-options", "nosniff")
+        self.send_header("x-frame-options", "DENY")
         self.end_headers()
         self.wfile.write(body)
 
