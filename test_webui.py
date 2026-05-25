@@ -6,7 +6,15 @@ import unittest
 import urllib.request
 
 from agent import build_demo_system
-from webui import WebAgentHandler, call_local_ai, clean_model_text, list_local_ai_models
+from webui import (
+    MAX_BODY_BYTES,
+    MAX_CONTENT_LEN,
+    MAX_ID_LEN,
+    WebAgentHandler,
+    call_local_ai,
+    clean_model_text,
+    list_local_ai_models,
+)
 
 
 class WebAgentHandlerTest(unittest.TestCase):
@@ -131,6 +139,67 @@ class WebAgentHandlerTest(unittest.TestCase):
         self.assertIn("mean_confidence", data)
         self.assertGreaterEqual(data["total"], 2)
         self.assertGreaterEqual(data["flagged_count"], 1)
+
+    def test_health_endpoint_returns_ok(self):
+        with urllib.request.urlopen(self._url("/api/health")) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(data["status"], "ok")
+        self.assertIn("started_at", data)
+        self.assertIn("uptime_seconds", data)
+        self.assertIn("total_processed", data)
+        self.assertGreaterEqual(data["uptime_seconds"], 0)
+        self.assertIsInstance(data["total_processed"], int)
+
+    def test_message_endpoint_rejects_empty_content(self):
+        body = json.dumps({"sender_id": "classmate_a", "conversation_id": "x", "content": ""}).encode("utf-8")
+        request = urllib.request.Request(self._url("/api/message"), data=body, method="POST", headers={"content-type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request)
+        with ctx.exception as error:
+            self.assertEqual(error.code, 400)
+            error_body = json.loads(error.read().decode("utf-8"))
+        self.assertIn("content", error_body["error"])
+
+    def test_message_endpoint_rejects_content_too_long(self):
+        body = json.dumps({"sender_id": "classmate_a", "content": "x" * (MAX_CONTENT_LEN + 1)}).encode("utf-8")
+        request = urllib.request.Request(self._url("/api/message"), data=body, method="POST", headers={"content-type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request)
+        with ctx.exception as error:
+            self.assertEqual(error.code, 400)
+            error_body = json.loads(error.read().decode("utf-8"))
+        self.assertIn("content", error_body["error"])
+
+    def test_message_endpoint_rejects_id_too_long(self):
+        body = json.dumps({"sender_id": "x" * (MAX_ID_LEN + 1), "content": "hello"}).encode("utf-8")
+        request = urllib.request.Request(self._url("/api/message"), data=body, method="POST", headers={"content-type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request)
+        with ctx.exception as error:
+            self.assertEqual(error.code, 400)
+            error_body = json.loads(error.read().decode("utf-8"))
+        self.assertIn("sender_id", error_body["error"])
+
+    def test_message_endpoint_rejects_oversized_body(self):
+        large_body = json.dumps({"content": "x" * (MAX_BODY_BYTES + 1)}).encode("utf-8")
+        self.assertGreater(len(large_body), MAX_BODY_BYTES)
+        request = urllib.request.Request(self._url("/api/message"), data=large_body, method="POST", headers={"content-type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request)
+        with ctx.exception as error:
+            self.assertEqual(error.code, 413)
+
+    def test_local_ai_test_rejects_invalid_scheme(self):
+        body = json.dumps({"base_url": "ftp://127.0.0.1:8001", "prompt": "hello"}).encode("utf-8")
+        request = urllib.request.Request(self._url("/api/local-ai-test"), data=body, method="POST", headers={"content-type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request)
+        with ctx.exception as error:
+            self.assertEqual(error.code, 400)
+            error_body = json.loads(error.read().decode("utf-8"))
+        self.assertIn("base_url", error_body["error"])
 
     def test_clean_model_text_preserves_normal_text(self):
         self.assertEqual(clean_model_text("正常回答。"), "正常回答。")

@@ -19,6 +19,17 @@ import urllib.error
 
 from agent import AgentResult, IncomingMessage, build_demo_system
 
+MAX_BODY_BYTES = 65_536
+MAX_CONTENT_LEN = 4_096
+MAX_ID_LEN = 128
+_ALLOWED_URL_SCHEMES = ("http://", "https://")
+
+_SERVER_START_TIME = datetime.now(timezone.utc)
+
+
+class _BodyTooLargeError(Exception):
+    pass
+
 
 HTML = """<!doctype html>
 <html lang="zh-Hans">
@@ -351,6 +362,16 @@ class WebAgentHandler(BaseHTTPRequestHandler):
         if self.path == "/api/audit":
             self._send_text(HTTPStatus.OK, self.system.audit_log.to_json(), "application/json; charset=utf-8")
             return
+        if self.path == "/api/health":
+            now = datetime.now(timezone.utc)
+            stats = self.system.audit_log.stats()
+            self._send_json(HTTPStatus.OK, {
+                "status": "ok",
+                "started_at": _SERVER_START_TIME.isoformat(),
+                "uptime_seconds": (now - _SERVER_START_TIME).total_seconds(),
+                "total_processed": stats.total,
+            })
+            return
         if self.path == "/api/stats":
             s = self.system.audit_log.stats()
             self._send_json(HTTPStatus.OK, {
@@ -389,10 +410,18 @@ class WebAgentHandler(BaseHTTPRequestHandler):
             if not content:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "content is required"})
                 return
+            if len(content) > MAX_CONTENT_LEN:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": f"content exceeds {MAX_CONTENT_LEN} characters"})
+                return
+            if len(sender_id) > MAX_ID_LEN or len(conversation_id) > MAX_ID_LEN:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": f"sender_id and conversation_id must be <= {MAX_ID_LEN} characters"})
+                return
 
             message = IncomingMessage(sender_id=sender_id, conversation_id=conversation_id, content=content, timestamp=datetime.now(timezone.utc), platform="web")
             result = self.system.handle_message(message)
             self._send_json(HTTPStatus.OK, result_to_dict(result))
+        except _BodyTooLargeError:
+            self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": f"request body exceeds {MAX_BODY_BYTES} bytes"})
         except json.JSONDecodeError:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid json"})
 
@@ -406,9 +435,14 @@ class WebAgentHandler(BaseHTTPRequestHandler):
             if not base_url or not prompt:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "base_url and prompt are required"})
                 return
+            if not any(base_url.startswith(s) for s in _ALLOWED_URL_SCHEMES):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "base_url must start with http:// or https://"})
+                return
             result = call_local_ai(base_url, model, prompt, api_key)
             status = HTTPStatus.OK if result["ok"] else HTTPStatus.BAD_GATEWAY
             self._send_json(status, result)
+        except _BodyTooLargeError:
+            self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": f"request body exceeds {MAX_BODY_BYTES} bytes"})
         except json.JSONDecodeError:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid json"})
 
@@ -417,6 +451,8 @@ class WebAgentHandler(BaseHTTPRequestHandler):
 
     def _read_json(self) -> dict[str, object]:
         length = int(self.headers.get("content-length", "0"))
+        if length > MAX_BODY_BYTES:
+            raise _BodyTooLargeError()
         body = self.rfile.read(length).decode("utf-8")
         return json.loads(body or "{}")
 
