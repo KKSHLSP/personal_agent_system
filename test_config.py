@@ -553,5 +553,140 @@ class PermissionsConfigTest(unittest.TestCase):
             del os.environ["AGENT_PERMISSIONS_FILE"]
 
 
+# ---------------------------------------------------------------------------
+# Config validation
+# ---------------------------------------------------------------------------
+
+class ConfigValidationTest(unittest.TestCase):
+    """validate() enforces value ranges; load_config() raises on invalid files."""
+
+    def test_default_config_passes_validation(self):
+        AgentConfig().validate()
+
+    def test_load_config_defaults_pass_validation(self):
+        load_config()
+
+    def test_max_messages_zero_raises(self):
+        c = AgentConfig()
+        c.rate_limit.max_messages = 0
+        with self.assertRaises(ValueError) as ctx:
+            c.validate()
+        self.assertIn("max_messages", str(ctx.exception))
+
+    def test_max_messages_negative_raises(self):
+        c = AgentConfig()
+        c.rate_limit.max_messages = -1
+        with self.assertRaises(ValueError):
+            c.validate()
+
+    def test_window_seconds_zero_raises(self):
+        c = AgentConfig()
+        c.rate_limit.window_seconds = 0.0
+        with self.assertRaises(ValueError) as ctx:
+            c.validate()
+        self.assertIn("window_seconds", str(ctx.exception))
+
+    def test_window_seconds_negative_raises(self):
+        c = AgentConfig()
+        c.rate_limit.window_seconds = -1.0
+        with self.assertRaises(ValueError):
+            c.validate()
+
+    def test_auto_reply_threshold_above_one_raises(self):
+        c = AgentConfig()
+        c.confidence.auto_reply_threshold = 1.1
+        with self.assertRaises(ValueError) as ctx:
+            c.validate()
+        self.assertIn("auto_reply_threshold", str(ctx.exception))
+
+    def test_auto_reply_threshold_negative_raises(self):
+        c = AgentConfig()
+        c.confidence.auto_reply_threshold = -0.01
+        with self.assertRaises(ValueError):
+            c.validate()
+
+    def test_base_score_above_one_raises(self):
+        c = AgentConfig()
+        c.confidence.base_score = 1.5
+        with self.assertRaises(ValueError) as ctx:
+            c.validate()
+        self.assertIn("base_score", str(ctx.exception))
+
+    def test_cap_negative_raises(self):
+        c = AgentConfig()
+        c.confidence.cap = -0.1
+        with self.assertRaises(ValueError) as ctx:
+            c.validate()
+        self.assertIn("cap", str(ctx.exception))
+
+    def test_score_multiplier_negative_raises(self):
+        c = AgentConfig()
+        c.confidence.score_multiplier = -0.5
+        with self.assertRaises(ValueError) as ctx:
+            c.validate()
+        self.assertIn("score_multiplier", str(ctx.exception))
+
+    def test_score_multiplier_zero_is_valid(self):
+        c = AgentConfig()
+        c.confidence.score_multiplier = 0.0
+        c.validate()
+
+    def test_search_limit_zero_raises(self):
+        c = AgentConfig()
+        c.knowledge.search_limit = 0
+        with self.assertRaises(ValueError) as ctx:
+            c.validate()
+        self.assertIn("search_limit", str(ctx.exception))
+
+    def test_max_recent_messages_zero_raises(self):
+        c = AgentConfig()
+        c.knowledge.max_recent_messages = 0
+        with self.assertRaises(ValueError) as ctx:
+            c.validate()
+        self.assertIn("max_recent_messages", str(ctx.exception))
+
+    def test_port_zero_raises(self):
+        c = AgentConfig()
+        c.webui.port = 0
+        with self.assertRaises(ValueError) as ctx:
+            c.validate()
+        self.assertIn("port", str(ctx.exception))
+
+    def test_port_65536_raises(self):
+        c = AgentConfig()
+        c.webui.port = 65536
+        with self.assertRaises(ValueError):
+            c.validate()
+
+    def test_load_config_with_invalid_json_raises(self):
+        fp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump({"rate_limit": {"max_messages": 0}}, fp)
+        fp.close()
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                load_config(fp.name)
+            self.assertIn("max_messages", str(ctx.exception))
+        finally:
+            os.unlink(fp.name)
+
+    def test_boundary_values_are_valid(self):
+        c = AgentConfig()
+        c.rate_limit.max_messages = 1
+        c.rate_limit.window_seconds = 0.001
+        c.confidence.auto_reply_threshold = 0.0
+        c.confidence.base_score = 1.0
+        c.confidence.cap = 0.0
+        c.confidence.score_multiplier = 0.0
+        c.knowledge.search_limit = 1
+        c.knowledge.max_recent_messages = 1
+        c.webui.port = 1
+        c.validate()
+
+    def test_port_65535_is_valid(self):
+        c = AgentConfig()
+        c.webui.port = 65535
+        c.validate()
+
+
 if __name__ == "__main__":
     unittest.main()

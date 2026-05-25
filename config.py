@@ -103,11 +103,33 @@ class AgentConfig:
     permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
     webui: WebUIConfig = field(default_factory=WebUIConfig)
 
+    def validate(self) -> None:
+        """Raise ValueError if any field is outside its valid range."""
+        if self.rate_limit.max_messages < 1:
+            raise ValueError("rate_limit.max_messages must be >= 1")
+        if self.rate_limit.window_seconds <= 0:
+            raise ValueError("rate_limit.window_seconds must be > 0")
+        if not 0.0 <= self.confidence.auto_reply_threshold <= 1.0:
+            raise ValueError("confidence.auto_reply_threshold must be in [0.0, 1.0]")
+        if not 0.0 <= self.confidence.base_score <= 1.0:
+            raise ValueError("confidence.base_score must be in [0.0, 1.0]")
+        if self.confidence.score_multiplier < 0:
+            raise ValueError("confidence.score_multiplier must be >= 0")
+        if not 0.0 <= self.confidence.cap <= 1.0:
+            raise ValueError("confidence.cap must be in [0.0, 1.0]")
+        if self.knowledge.search_limit < 1:
+            raise ValueError("knowledge.search_limit must be >= 1")
+        if self.knowledge.max_recent_messages < 1:
+            raise ValueError("knowledge.max_recent_messages must be >= 1")
+        if not 1 <= self.webui.port <= 65535:
+            raise ValueError("webui.port must be in [1, 65535]")
+
 
 def load_config(path: str | None = None) -> AgentConfig:
     """Return an AgentConfig from *path* (JSON/YAML) plus env-var overrides.
 
     A missing or unreadable file silently returns all defaults.
+    Raises ValueError if the resulting config contains out-of-range values.
     """
     config = AgentConfig()
     if path is not None:
@@ -115,6 +137,7 @@ def load_config(path: str | None = None) -> AgentConfig:
         if raw:
             _apply_raw(config, raw)
     _apply_env(config)
+    config.validate()
     return config
 
 
