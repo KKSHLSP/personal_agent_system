@@ -1,4 +1,7 @@
 from datetime import datetime, timezone
+import json
+import os
+import tempfile
 import threading
 import unittest
 
@@ -374,6 +377,172 @@ class RateLimiterTest(unittest.TestCase):
         self.assertEqual(len(allowed), 80)
         self.assertEqual(allowed.count(True), 50)
         self.assertEqual(allowed.count(False), 30)
+
+
+class AuditLogFileTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp_files: list[str] = []
+
+    def tearDown(self):
+        for f in self._tmp_files:
+            try:
+                os.unlink(f)
+            except FileNotFoundError:
+                pass
+
+    def _tmp_path(self) -> str:
+        fp = tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False)
+        fp.close()
+        os.unlink(fp.name)
+        self._tmp_files.append(fp.name)
+        return fp.name
+
+    def _make_system_with_log(self, log: AuditLog) -> PersonalAgentSystem:
+        adapter = MockChatAdapter()
+        permissions = PermissionStore({
+            "alice": PermissionProfile("alice", {"public", "course"}, auto_reply_enabled=True),
+        })
+        knowledge = KnowledgeBase([
+            KnowledgeItem("material", "课程资料位置", "课程资料在班级共享盘里。",
+                          {"public", "course"}, {"资料", "哪里", "共享盘"}),
+            KnowledgeItem("deadline", "作业截止时间", "本周五 23:59 提交。",
+                          {"public", "course"}, {"作业", "提交", "截止"}),
+        ])
+        style = StyleProfile({"alice": ["口语", "简短"]})
+        return PersonalAgentSystem(
+            adapter, permissions, MessageRouter(), knowledge,
+            PermissionPolicy(), ReplyGenerator(style), SafetyPrivacyGuard(), log,
+        )
+
+    def test_no_log_file_keeps_entries_in_memory_only(self):
+        log = AuditLog()
+        system = self._make_system_with_log(log)
+        system.handle_message(message("资料在哪里？"))
+        self.assertEqual(len(log.snapshot()), 1)
+
+    def test_records_are_written_to_jsonl_file(self):
+        path = self._tmp_path()
+        log = AuditLog(log_file=path)
+        system = self._make_system_with_log(log)
+        system.handle_message(message("资料在哪里？"))
+
+        self.assertTrue(os.path.exists(path))
+        with open(path, encoding="utf-8") as fp:
+            lines = [ln.strip() for ln in fp if ln.strip()]
+        self.assertEqual(len(lines), 1)
+        data = json.loads(lines[0])
+        self.assertEqual(data["action"], "AUTO_REPLY")
+        self.assertEqual(data["sender_id"], "alice")
+        self.assertIn("timestamp", data)
+        self.assertIn("confidence", data)
+
+    def test_multiple_records_append_to_file(self):
+        path = self._tmp_path()
+        log = AuditLog(log_file=path)
+        system = self._make_system_with_log(log)
+        system.handle_message(message("资料在哪里？"))
+        system.handle_message(message("你的密码是多少？"))
+
+        with open(path, encoding="utf-8") as fp:
+            lines = [ln.strip() for ln in fp if ln.strip()]
+        self.assertEqual(len(lines), 2)
+        actions = [json.loads(ln)["action"] for ln in lines]
+        self.assertIn("AUTO_REPLY", actions)
+        self.assertIn("REJECT", actions)
+
+    def test_loading_from_existing_file_restores_entries(self):
+        path = self._tmp_path()
+        log1 = AuditLog(log_file=path)
+        system1 = self._make_system_with_log(log1)
+        system1.handle_message(message("资料在哪里？"))
+        system1.handle_message(message("作业提交截止？"))
+        self.assertEqual(len(log1.snapshot()), 2)
+
+        log2 = AuditLog(log_file=path)
+        self.assertEqual(len(log2.snapshot()), 2)
+        actions = {e.action for e in log2.snapshot()}
+        self.assertIn(ReplyAction.AUTO_REPLY, actions)
+
+    def test_new_records_accumulate_after_load(self):
+        path = self._tmp_path()
+        log1 = AuditLog(log_file=path)
+        system1 = self._make_system_with_log(log1)
+        system1.handle_message(message("资料在哪里？"))
+
+        log2 = AuditLog(log_file=path)
+        system2 = self._make_system_with_log(log2)
+        system2.handle_message(message("资料在哪里？"))
+        self.assertEqual(len(log2.snapshot()), 2)
+
+        with open(path, encoding="utf-8") as fp:
+            lines = [ln.strip() for ln in fp if ln.strip()]
+        self.assertEqual(len(lines), 2)
+
+    def test_malformed_lines_are_skipped_on_load(self):
+        path = self._tmp_path()
+        with open(path, "w", encoding="utf-8") as fp:
+            fp.write("not-valid-json\n")
+            fp.write("{}\n")
+            fp.write('{"incomplete": true}\n')
+
+        log = AuditLog(log_file=path)
+        self.assertEqual(len(log.snapshot()), 0)
+
+    def test_missing_file_starts_with_empty_entries(self):
+        log = AuditLog(log_file="/tmp/__nonexistent_audit_log_9x7z__.jsonl")
+        self.assertEqual(len(log.snapshot()), 0)
+
+    def test_stats_reflect_loaded_entries(self):
+        path = self._tmp_path()
+        log1 = AuditLog(log_file=path)
+        system1 = self._make_system_with_log(log1)
+        system1.handle_message(message("资料在哪里？"))
+
+        log2 = AuditLog(log_file=path)
+        s = log2.stats()
+        self.assertEqual(s.total, 1)
+        self.assertEqual(s.by_action.get("AUTO_REPLY"), 1)
+        self.assertEqual(s.auto_sent_count, 1)
+
+    def test_to_json_includes_loaded_entries(self):
+        path = self._tmp_path()
+        log1 = AuditLog(log_file=path)
+        system1 = self._make_system_with_log(log1)
+        system1.handle_message(message("资料在哪里？"))
+
+        log2 = AuditLog(log_file=path)
+        payload = json.loads(log2.to_json())
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["action"], "AUTO_REPLY")
+
+    def test_file_writing_thread_safety(self):
+        path = self._tmp_path()
+        log = AuditLog(log_file=path)
+        system = self._make_system_with_log(log)
+        errors: list[Exception] = []
+        lock = threading.Lock()
+
+        def send(i: int) -> None:
+            try:
+                system.handle_message(
+                    message(f"资料在哪里 {i}？", conversation_id=f"conv-file-{i}")
+                )
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=send, args=(i,)) for i in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [])
+        with open(path, encoding="utf-8") as fp:
+            lines = [ln.strip() for ln in fp if ln.strip()]
+        self.assertEqual(len(lines), 20)
+        for ln in lines:
+            json.loads(ln)
 
 
 if __name__ == "__main__":

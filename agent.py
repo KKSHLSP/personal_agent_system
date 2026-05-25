@@ -345,9 +345,12 @@ class AuditStats:
 
 
 class AuditLog:
-    def __init__(self) -> None:
+    def __init__(self, log_file: str = "") -> None:
         self.entries: list[AuditEntry] = []
         self._lock = threading.Lock()
+        self._log_file = log_file
+        if log_file:
+            self._load_existing()
 
     def record(self, result: AgentResult) -> None:
         entry = AuditEntry(
@@ -363,10 +366,54 @@ class AuditLog:
         )
         with self._lock:
             self.entries.append(entry)
+            if self._log_file:
+                self._append_to_file(entry)
 
     def snapshot(self) -> list[AuditEntry]:
         with self._lock:
             return list(self.entries)
+
+    def _load_existing(self) -> None:
+        try:
+            with open(self._log_file, encoding="utf-8") as fp:
+                for line in fp:
+                    line = line.strip()
+                    if line:
+                        try:
+                            self.entries.append(self._dict_to_entry(json.loads(line)))
+                        except (KeyError, ValueError, json.JSONDecodeError):
+                            pass
+        except FileNotFoundError:
+            pass
+
+    def _append_to_file(self, entry: AuditEntry) -> None:
+        try:
+            with open(self._log_file, "a", encoding="utf-8") as fp:
+                fp.write(json.dumps(self._entry_to_dict(entry), ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    @staticmethod
+    def _entry_to_dict(entry: AuditEntry) -> dict:
+        return {
+            **entry.__dict__,
+            "timestamp": entry.timestamp.isoformat(),
+            "action": entry.action.value,
+        }
+
+    @staticmethod
+    def _dict_to_entry(d: dict) -> AuditEntry:
+        return AuditEntry(
+            timestamp=datetime.fromisoformat(d["timestamp"]),
+            conversation_id=str(d["conversation_id"]),
+            sender_id=str(d["sender_id"]),
+            action=ReplyAction(d["action"]),
+            reason=str(d["reason"]),
+            confidence=float(d["confidence"]),
+            evidence=list(d.get("evidence", [])),
+            safety_flags=list(d.get("safety_flags", [])),
+            auto_sent=bool(d["auto_sent"]),
+        )
 
     def stats(self) -> AuditStats:
         entries = self.snapshot()
@@ -393,14 +440,7 @@ class AuditLog:
         )
 
     def to_json(self) -> str:
-        payload = [
-            {
-                **entry.__dict__,
-                "timestamp": entry.timestamp.isoformat(),
-                "action": entry.action.value,
-            }
-            for entry in self.snapshot()
-        ]
+        payload = [self._entry_to_dict(entry) for entry in self.snapshot()]
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
@@ -617,7 +657,7 @@ def build_demo_system(config: AgentConfig | None = None) -> PersonalAgentSystem:
         ),
         generator=ReplyGenerator(style),
         guard=SafetyPrivacyGuard(sensitive_patterns=config.safety.sensitive_patterns),
-        audit_log=AuditLog(),
+        audit_log=AuditLog(log_file=config.audit.log_file),
         rate_limiter=RateLimiter(config.rate_limit.max_messages, config.rate_limit.window_seconds),
         knowledge_search_limit=config.knowledge.search_limit,
     )

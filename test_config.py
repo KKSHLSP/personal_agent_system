@@ -8,6 +8,7 @@ import unittest
 
 from config import (
     AgentConfig,
+    AuditConfig,
     ConfidenceConfig,
     KnowledgeConfig,
     RateLimitConfig,
@@ -406,6 +407,77 @@ class KnowledgeSearchLimitTest(unittest.TestCase):
         )
 
         self.assertLessEqual(len(result.draft.evidence), 2)
+
+
+class AuditConfigTest(unittest.TestCase):
+    def setUp(self):
+        self._saved = {k: os.environ.pop(k) for k in ["AGENT_AUDIT_LOG_FILE"] if k in os.environ}
+
+    def tearDown(self):
+        os.environ.pop("AGENT_AUDIT_LOG_FILE", None)
+        os.environ.update(self._saved)
+
+    def test_audit_default_log_file_is_empty(self):
+        config = load_config()
+        self.assertEqual(config.audit.log_file, "")
+
+    def test_audit_log_file_from_json(self):
+        fp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump({"audit": {"log_file": "/tmp/test_audit.jsonl"}}, fp)
+        fp.close()
+        try:
+            config = load_config(fp.name)
+            self.assertEqual(config.audit.log_file, "/tmp/test_audit.jsonl")
+        finally:
+            os.unlink(fp.name)
+
+    def test_env_overrides_audit_log_file(self):
+        os.environ["AGENT_AUDIT_LOG_FILE"] = "/var/log/agent.jsonl"
+        config = load_config()
+        self.assertEqual(config.audit.log_file, "/var/log/agent.jsonl")
+
+    def test_env_audit_wins_over_json(self):
+        fp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump({"audit": {"log_file": "/tmp/from_json.jsonl"}}, fp)
+        fp.close()
+        os.environ["AGENT_AUDIT_LOG_FILE"] = "/tmp/from_env.jsonl"
+        try:
+            config = load_config(fp.name)
+            self.assertEqual(config.audit.log_file, "/tmp/from_env.jsonl")
+        finally:
+            os.unlink(fp.name)
+
+    def test_audit_config_is_independent_across_load_calls(self):
+        c1 = load_config()
+        c2 = load_config()
+        c1.audit.log_file = "/tmp/mutated.jsonl"
+        self.assertEqual(c2.audit.log_file, "")
+
+    def test_build_demo_system_passes_log_file_to_audit_log(self):
+        import tempfile as _tmp
+        fp = _tmp.NamedTemporaryFile(suffix=".jsonl", delete=False)
+        fp.close()
+        os.unlink(fp.name)
+        try:
+            config = load_config()
+            config.audit.log_file = fp.name
+            from agent import IncomingMessage, build_demo_system
+            system = build_demo_system(config)
+            system.handle_message(
+                IncomingMessage("classmate_a", "audit-cfg-conv", "资料在哪里？",
+                                datetime.now(timezone.utc), "test")
+            )
+            self.assertTrue(os.path.exists(fp.name))
+            with open(fp.name, encoding="utf-8") as f:
+                lines = [ln.strip() for ln in f if ln.strip()]
+            self.assertEqual(len(lines), 1)
+            import json as _json
+            self.assertEqual(_json.loads(lines[0])["action"], "AUTO_REPLY")
+        finally:
+            try:
+                os.unlink(fp.name)
+            except FileNotFoundError:
+                pass
 
 
 class RateLimitConfigWiringTest(unittest.TestCase):

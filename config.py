@@ -7,6 +7,7 @@ JSON example (agent.json):
     {
       "rate_limit":  {"max_messages": 10, "window_seconds": 30},
       "confidence":  {"auto_reply_threshold": 0.8},
+      "audit":       {"log_file": "/var/log/agent_audit.jsonl"},
       "webui":       {"port": 9090}
     }
 
@@ -14,6 +15,8 @@ YAML example (agent.yaml) — requires: pip install pyyaml:
     rate_limit:
       max_messages: 10
       window_seconds: 30
+    audit:
+      log_file: /var/log/agent_audit.jsonl
     webui:
       port: 9090
 
@@ -26,6 +29,7 @@ Environment variable overrides (all optional):
     AGENT_CONFIDENCE_CAP                  float
     AGENT_KNOWLEDGE_SEARCH_LIMIT          int
     AGENT_KNOWLEDGE_MAX_RECENT_MESSAGES   int
+    AGENT_AUDIT_LOG_FILE                  str   (empty = disabled)
     AGENT_WEBUI_HOST                      str
     AGENT_WEBUI_PORT                      int
     AGENT_WEBUI_LOCAL_AI_URL              str
@@ -74,11 +78,17 @@ class WebUIConfig:
 
 
 @dataclass
+class AuditConfig:
+    log_file: str = ""
+
+
+@dataclass
 class AgentConfig:
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
     confidence: ConfidenceConfig = field(default_factory=ConfidenceConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
+    audit: AuditConfig = field(default_factory=AuditConfig)
     webui: WebUIConfig = field(default_factory=WebUIConfig)
 
 
@@ -122,6 +132,7 @@ def _apply_raw(config: AgentConfig, raw: dict) -> None:
         "confidence": config.confidence,
         "safety": config.safety,
         "knowledge": config.knowledge,
+        "audit": config.audit,
         "webui": config.webui,
     }
     for section_name, section_raw in raw.items():
@@ -144,6 +155,7 @@ def _apply_env(config: AgentConfig) -> None:
     _env_float("AGENT_CONFIDENCE_CAP", config.confidence, "cap")
     _env_int("AGENT_KNOWLEDGE_SEARCH_LIMIT", config.knowledge, "search_limit")
     _env_int("AGENT_KNOWLEDGE_MAX_RECENT_MESSAGES", config.knowledge, "max_recent_messages")
+    _env_str("AGENT_AUDIT_LOG_FILE", config.audit, "log_file")
     _env_str("AGENT_WEBUI_HOST", config.webui, "host")
     _env_int("AGENT_WEBUI_PORT", config.webui, "port")
     _env_str("AGENT_WEBUI_LOCAL_AI_URL", config.webui, "local_ai_url")
