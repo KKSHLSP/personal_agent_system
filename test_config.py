@@ -758,6 +758,43 @@ class ConfigValidationTest(unittest.TestCase):
         c.audit.max_entries = 10000
         c.validate()
 
+    def test_invalid_regex_in_sensitive_patterns_raises(self):
+        c = AgentConfig()
+        c.safety.sensitive_patterns = [r"valid_pattern", r"[unclosed"]
+        with self.assertRaises(ValueError) as ctx:
+            c.validate()
+        self.assertIn("sensitive_patterns", str(ctx.exception))
+
+    def test_invalid_regex_error_message_includes_index(self):
+        c = AgentConfig()
+        c.safety.sensitive_patterns = [r"(unmatched"]
+        with self.assertRaises(ValueError) as ctx:
+            c.validate()
+        self.assertIn("[0]", str(ctx.exception))
+
+    def test_valid_patterns_pass_validation(self):
+        c = AgentConfig()
+        c.safety.sensitive_patterns = [r"\d{4}", r"密码|口令", r"(?i)secret"]
+        c.validate()
+
+    def test_empty_patterns_list_passes_validation(self):
+        c = AgentConfig()
+        c.safety.sensitive_patterns = []
+        c.validate()
+
+    def test_load_config_raises_for_invalid_regex_in_file(self):
+        fp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        )
+        json.dump({"safety": {"sensitive_patterns": [r"[bad"]}}, fp)
+        fp.close()
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                load_config(fp.name)
+            self.assertIn("sensitive_patterns", str(ctx.exception))
+        finally:
+            os.unlink(fp.name)
+
 
 class ConfigToDictRedactionTest(unittest.TestCase):
     """config_to_dict must not leak internal paths or detection-rule content."""

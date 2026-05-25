@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 import json
 import logging
 import os
+import re
 from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,13 @@ class AgentConfig:
             raise ValueError("audit.max_entries must be >= 0")
         if not 1 <= self.webui.port <= 65535:
             raise ValueError("webui.port must be in [1, 65535]")
+        for i, pattern in enumerate(self.safety.sensitive_patterns):
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"sensitive_patterns[{i}] is not a valid regular expression: {exc}"
+                ) from exc
 
 
 def config_to_dict(config: AgentConfig) -> dict:
